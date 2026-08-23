@@ -6,7 +6,7 @@ COMMON_FLAGS := -std=c++17 -O2 -lineinfo -I$(ROOT_DIR)/include -Xcompiler=-Wall,
 SM70_FLAGS := -DKITTENS_SM70 -gencode arch=compute_70,code=sm_70
 SM75_FLAGS := -DKITTENS_SM75 -gencode arch=compute_75,code=sm_75
 
-.PHONY: all check-arch check-codegen build-mma-sm70 build-mma-sm75 test-mma-sm75 build-sm70 build-sm75 test-sm75 clean
+.PHONY: all check-arch check-codegen build-mma-sm70 build-mma-sm75 test-mma-sm75 build-sm70 build-sm75 test-sm75 sanitize-sm75 clean
 
 all: check-arch check-codegen build-mma-sm70 build-mma-sm75 build-sm70 build-sm75
 
@@ -47,6 +47,11 @@ build-sm75: $(BUILD_DIR)/gemm-sm75
 test-sm75: build-sm75
 	@status=0; "$(BUILD_DIR)/gemm-sm75" || status=$$?; \
 	if [[ $$status -eq 77 ]]; then echo "SKIP: GEMM SM75 runtime validation pending (binary exit 77)"; exit 0; fi; \
+	exit $$status
+
+sanitize-sm75: build-sm75
+	@status=0; BUILD_DIR="$(BUILD_DIR)" bash tests/run_sanitizers.sh || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: SM75 sanitizer validation pending (script exit 77)"; exit 0; fi; \
 	exit $$status
 
 clean:

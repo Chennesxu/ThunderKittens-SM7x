@@ -1,32 +1,41 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
-#include <array>
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <random>
+#include <vector>
 
 #include "test_utils.cuh"
 #include "tk_sm7x/gemm.cuh"
 
 namespace {
 
-__global__ void seed_stale_launch_error() {}
+constexpr float kSentinel = -123456.0f;
 
-bool verify_identity(const std::array<__half, 256>& a,
-                     const std::array<float, 256>& c) {
-    for (int index = 0; index < 256; ++index) {
-        const float reference = __half2float(a[index]);
-        if (c[index] != reference) {
-            std::fprintf(stderr,
-                         "identity mismatch row=%d col=%d actual=%g reference=%g\n",
-                         index / 16, index % 16, c[index], reference);
-            return false;
-        }
-    }
-    return true;
-}
+enum class Pattern {
+    identity_right,
+    fingerprint,
+    random,
+};
 
-struct CompactArguments {
+struct GemmCase {
+    const char* name;
+    int m;
+    int n;
+    int k;
+    int lda;
+    int ldb;
+    int ldc;
+    Pattern pattern;
+    unsigned int seed;
+    bool exact;
+    bool seed_stale_error;
+};
+
+struct GemmArguments {
     int m;
     int n;
     int k;
@@ -38,18 +47,197 @@ struct CompactArguments {
     int ldc;
 };
 
-bool expect_compact_invalid(const char* name,
-                            const CompactArguments& arguments,
-                            float* observed_c,
-                            cudaStream_t stream) {
-    std::array<float, 256> sentinel{};
-    sentinel.fill(-654321.0f);
-    if (!tk_sm7x::test::cuda_ok(
-            cudaMemcpy(observed_c, sentinel.data(), sizeof(sentinel),
-                       cudaMemcpyHostToDevice),
-            "reset compact invalid C")) {
+__global__ void seed_stale_launch_error() {}
+
+void fill_inputs(const GemmCase& test_case,
+                 std::vector<__half>* a,
+                 std::vector<__half>* b) {
+    const __half zero = __float2half(0.0f);
+    std::fill(a->begin(), a->end(), zero);
+    std::fill(b->begin(), b->end(), zero);
+
+    if (test_case.pattern == Pattern::random) {
+        std::mt19937 generator(test_case.seed);
+        std::uniform_real_distribution<float> distribution(-1.0f, 1.0f);
+        for (int row = 0; row < test_case.m; ++row) {
+            for (int col = 0; col < test_case.k; ++col) {
+                (*a)[row * test_case.lda + col] = __float2half(distribution(generator));
+            }
+        }
+        for (int row = 0; row < test_case.k; ++row) {
+            for (int col = 0; col < test_case.n; ++col) {
+                (*b)[row * test_case.ldb + col] = __float2half(distribution(generator));
+            }
+        }
+        return;
+    }
+
+    for (int row = 0; row < test_case.m; ++row) {
+        for (int col = 0; col < test_case.k; ++col) {
+            (*a)[row * test_case.lda + col] = __float2half(
+                static_cast<float>((row * 3 + col * 5) % 7 - 3));
+        }
+    }
+    for (int row = 0; row < test_case.k; ++row) {
+        for (int col = 0; col < test_case.n; ++col) {
+            const float value = test_case.pattern == Pattern::identity_right
+                                    ? (row == col ? 1.0f : 0.0f)
+                                    : static_cast<float>((row * 2 + col * 3) % 5 - 2);
+            (*b)[row * test_case.ldb + col] = __float2half(value);
+        }
+    }
+}
+
+std::vector<float> make_reference(const GemmCase& test_case,
+                                  const std::vector<__half>& a,
+                                  const std::vector<__half>& b) {
+    std::vector<float> reference(
+        static_cast<std::size_t>(test_case.m) * test_case.ldc, kSentinel);
+    for (int row = 0; row < test_case.m; ++row) {
+        for (int col = 0; col < test_case.n; ++col) {
+            double sum = 0.0;
+            for (int kk = 0; kk < test_case.k; ++kk) {
+                sum += static_cast<double>(__half2float(a[row * test_case.lda + kk])) *
+                       static_cast<double>(__half2float(b[kk * test_case.ldb + col]));
+            }
+            reference[row * test_case.ldc + col] = static_cast<float>(sum);
+        }
+    }
+    return reference;
+}
+
+bool compare_output(const GemmCase& test_case,
+                    const std::vector<float>& actual,
+                    const std::vector<float>& reference) {
+    float max_absolute_error = 0.0f;
+    float max_relative_error = 0.0f;
+    bool matched = true;
+    bool first_reported = false;
+
+    for (int row = 0; row < test_case.m; ++row) {
+        for (int col = 0; col < test_case.n; ++col) {
+            const int index = row * test_case.ldc + col;
+            const float absolute_error = std::fabs(actual[index] - reference[index]);
+            const float relative_error = absolute_error /
+                std::max(std::fabs(reference[index]), 1.0e-12f);
+            max_absolute_error = std::max(max_absolute_error, absolute_error);
+            max_relative_error = std::max(max_relative_error, relative_error);
+            const bool element_matches = test_case.exact
+                ? actual[index] == reference[index]
+                : absolute_error <= 2.0e-3f + 2.0e-3f * std::fabs(reference[index]);
+            if (!element_matches) {
+                matched = false;
+                if (!first_reported) {
+                    std::fprintf(stderr,
+                                 "%s first mismatch row=%d col=%d actual=%g reference=%g\n",
+                                 test_case.name, row, col, actual[index], reference[index]);
+                    first_reported = true;
+                }
+            }
+        }
+        for (int col = test_case.n; col < test_case.ldc; ++col) {
+            const int index = row * test_case.ldc + col;
+            if (actual[index] != kSentinel) {
+                std::fprintf(stderr,
+                             "%s modified C padding row=%d col=%d actual=%g\n",
+                             test_case.name, row, col, actual[index]);
+                matched = false;
+            }
+        }
+    }
+
+    if (!matched) {
+        std::fprintf(stderr, "%s max_abs=%g max_rel=%g\n", test_case.name,
+                     max_absolute_error, max_relative_error);
+    }
+    return matched;
+}
+
+bool run_case(const GemmCase& test_case, cudaStream_t stream) {
+    std::vector<__half> a(
+        static_cast<std::size_t>(test_case.m) * test_case.lda);
+    std::vector<__half> b(
+        static_cast<std::size_t>(test_case.k) * test_case.ldb);
+    std::vector<float> actual(
+        static_cast<std::size_t>(test_case.m) * test_case.ldc, kSentinel);
+    fill_inputs(test_case, &a, &b);
+    const std::vector<float> reference = make_reference(test_case, a, b);
+
+    __half* device_a = nullptr;
+    __half* device_b = nullptr;
+    float* device_c = nullptr;
+    const auto release = [&]() {
+        if (device_a != nullptr) cudaFree(device_a);
+        if (device_b != nullptr) cudaFree(device_b);
+        if (device_c != nullptr) cudaFree(device_c);
+    };
+
+    const std::size_t a_bytes = a.size() * sizeof(__half);
+    const std::size_t b_bytes = b.size() * sizeof(__half);
+    const std::size_t c_bytes = actual.size() * sizeof(float);
+    if (!tk_sm7x::test::cuda_ok(cudaMalloc(reinterpret_cast<void**>(&device_a), a_bytes),
+                                "cudaMalloc(A)") ||
+        !tk_sm7x::test::cuda_ok(cudaMalloc(reinterpret_cast<void**>(&device_b), b_bytes),
+                                "cudaMalloc(B)") ||
+        !tk_sm7x::test::cuda_ok(cudaMalloc(reinterpret_cast<void**>(&device_c), c_bytes),
+                                "cudaMalloc(C)") ||
+        !tk_sm7x::test::cuda_ok(
+            cudaMemcpy(device_a, a.data(), a_bytes, cudaMemcpyHostToDevice),
+            "cudaMemcpy(A)") ||
+        !tk_sm7x::test::cuda_ok(
+            cudaMemcpy(device_b, b.data(), b_bytes, cudaMemcpyHostToDevice),
+            "cudaMemcpy(B)") ||
+        !tk_sm7x::test::cuda_ok(
+            cudaMemcpy(device_c, actual.data(), c_bytes, cudaMemcpyHostToDevice),
+            "cudaMemcpy(C sentinel)")) {
+        release();
         return false;
     }
+
+    if (test_case.seed_stale_error) {
+        seed_stale_launch_error<<<0, 1>>>();
+        if (cudaPeekAtLastError() == cudaSuccess) {
+            std::fprintf(stderr, "%s failed to seed stale CUDA error\n", test_case.name);
+            release();
+            return false;
+        }
+    }
+
+    const cudaError_t launch_status = tk_sm7x::gemm_f16_f16_f32_nn(
+        test_case.m, test_case.n, test_case.k,
+        device_a, test_case.lda, device_b, test_case.ldb,
+        device_c, test_case.ldc, stream);
+    if (!tk_sm7x::test::cuda_ok(launch_status, test_case.name) ||
+        !tk_sm7x::test::cuda_ok(cudaStreamSynchronize(stream),
+                                "cudaStreamSynchronize") ||
+        !tk_sm7x::test::cuda_ok(
+            cudaMemcpy(actual.data(), device_c, c_bytes, cudaMemcpyDeviceToHost),
+            "cudaMemcpy(C)")) {
+        release();
+        return false;
+    }
+
+    const bool matched = compare_output(test_case, actual, reference);
+    release();
+    if (matched) {
+        std::printf("%s: PASS\n", test_case.name);
+    }
+    return matched;
+}
+
+bool expect_invalid(const char* name,
+                    const GemmArguments& arguments,
+                    float* observed_c,
+                    std::size_t c_elements,
+                    cudaStream_t stream) {
+    std::vector<float> sentinel(c_elements, kSentinel);
+    if (!tk_sm7x::test::cuda_ok(
+            cudaMemcpy(observed_c, sentinel.data(), c_elements * sizeof(float),
+                       cudaMemcpyHostToDevice),
+            "reset invalid-case C")) {
+        return false;
+    }
+
     static_cast<void>(cudaGetLastError());
     const cudaError_t status = tk_sm7x::gemm_f16_f16_f32_nn(
         arguments.m, arguments.n, arguments.k,
@@ -61,16 +249,16 @@ bool expect_compact_invalid(const char* name,
                      name, cudaGetErrorString(status));
     }
     if (!tk_sm7x::test::cuda_ok(cudaStreamSynchronize(stream),
-                                "compact invalid cudaStreamSynchronize") ||
+                                "invalid-case cudaStreamSynchronize") ||
         !tk_sm7x::test::cuda_ok(
-            cudaMemcpy(sentinel.data(), observed_c, sizeof(sentinel),
+            cudaMemcpy(sentinel.data(), observed_c, c_elements * sizeof(float),
                        cudaMemcpyDeviceToHost),
-            "read compact invalid C")) {
+            "read invalid-case C")) {
         return false;
     }
     for (float value : sentinel) {
-        if (value != -654321.0f) {
-            std::fprintf(stderr, "%s modified output\n", name);
+        if (value != kSentinel) {
+            std::fprintf(stderr, "%s modified output despite invalid arguments\n", name);
             passed = false;
             break;
         }
@@ -78,74 +266,84 @@ bool expect_compact_invalid(const char* name,
     return passed;
 }
 
-bool run_compact_invalid_cases(const __half* device_a,
-                               const __half* device_b,
-                               float* device_c,
-                               cudaStream_t stream) {
-    const CompactArguments base{
-        16, 16, 16, device_a, 16, device_b, 16, device_c, 16};
-    bool passed = true;
-    const auto check = [&](const char* name, const CompactArguments& arguments) {
-        passed = expect_compact_invalid(name, arguments, device_c, stream) && passed;
-    };
-    CompactArguments arguments = base;
+bool run_invalid_cases(cudaStream_t stream) {
+    __half* device_a = nullptr;
+    __half* device_b = nullptr;
+    float* device_c = nullptr;
+    constexpr std::size_t elements = 256;
+    if (!tk_sm7x::test::cuda_ok(
+            cudaMalloc(reinterpret_cast<void**>(&device_a), elements * sizeof(__half)),
+            "cudaMalloc(invalid A)") ||
+        !tk_sm7x::test::cuda_ok(
+            cudaMalloc(reinterpret_cast<void**>(&device_b), elements * sizeof(__half)),
+            "cudaMalloc(invalid B)") ||
+        !tk_sm7x::test::cuda_ok(
+            cudaMalloc(reinterpret_cast<void**>(&device_c), elements * sizeof(float)),
+            "cudaMalloc(invalid C)")) {
+        if (device_a != nullptr) cudaFree(device_a);
+        if (device_b != nullptr) cudaFree(device_b);
+        if (device_c != nullptr) cudaFree(device_c);
+        return false;
+    }
 
+    const GemmArguments base{16, 16, 16, device_a, 16, device_b, 16, device_c, 16};
+    bool passed = true;
+    const auto check = [&](const char* name, const GemmArguments& arguments) {
+        passed = expect_invalid(name, arguments, device_c, elements, stream) && passed;
+    };
+
+    GemmArguments arguments = base;
     arguments.a = nullptr;
-    check("compact null A", arguments);
+    check("null A", arguments);
     arguments = base;
     arguments.b = nullptr;
-    check("compact null B", arguments);
+    check("null B", arguments);
     arguments = base;
     arguments.c = nullptr;
-    check("compact null C", arguments);
-
+    check("null C", arguments);
     arguments = base;
     arguments.m = 0;
-    check("compact zero M", arguments);
+    check("zero M", arguments);
     arguments = base;
     arguments.n = 0;
-    check("compact zero N", arguments);
+    check("zero N", arguments);
     arguments = base;
     arguments.k = 0;
-    check("compact zero K", arguments);
+    check("zero K", arguments);
     arguments = base;
     arguments.m = -16;
-    check("compact negative M", arguments);
+    check("negative M", arguments);
     arguments = base;
     arguments.n = -16;
-    check("compact negative N", arguments);
+    check("negative N", arguments);
     arguments = base;
     arguments.k = -16;
-    check("compact negative K", arguments);
-
+    check("negative K", arguments);
     arguments = base;
-    arguments.m = 32;
-    check("compact non-16 M", arguments);
+    arguments.m = 17;
+    check("nonmultiple M", arguments);
     arguments = base;
-    arguments.n = 32;
-    check("compact non-16 N", arguments);
+    arguments.n = 17;
+    check("nonmultiple N", arguments);
     arguments = base;
-    arguments.k = 32;
-    check("compact non-16 K", arguments);
+    arguments.k = 17;
+    check("nonmultiple K", arguments);
     arguments = base;
     arguments.lda = 15;
-    check("compact short lda", arguments);
-    arguments = base;
-    arguments.lda = 17;
-    check("compact long lda", arguments);
+    check("short lda", arguments);
     arguments = base;
     arguments.ldb = 15;
-    check("compact short ldb", arguments);
-    arguments = base;
-    arguments.ldb = 17;
-    check("compact long ldb", arguments);
+    check("short ldb", arguments);
     arguments = base;
     arguments.ldc = 15;
-    check("compact short ldc", arguments);
-    arguments = base;
-    arguments.ldc = 17;
-    check("compact long ldc", arguments);
+    check("short ldc", arguments);
 
+    cudaFree(device_a);
+    cudaFree(device_b);
+    cudaFree(device_c);
+    if (passed) {
+        std::printf("invalid argument matrix: PASS\n");
+    }
     return passed;
 }
 
@@ -158,79 +356,32 @@ int main() {
         return selection_status;
     }
 
-    std::array<__half, 256> a{};
-    std::array<__half, 256> b{};
-    std::array<float, 256> c{};
-    for (int row = 0; row < 16; ++row) {
-        for (int col = 0; col < 16; ++col) {
-            a[row * 16 + col] =
-                __float2half(static_cast<float>((row * 5 + col * 3) % 17 - 8));
-            b[row * 16 + col] = __float2half(row == col ? 1.0f : 0.0f);
-        }
-    }
-
-    __half* device_a = nullptr;
-    __half* device_b = nullptr;
-    float* device_c = nullptr;
     cudaStream_t stream = nullptr;
-    const auto release = [&]() {
-        if (stream != nullptr) cudaStreamDestroy(stream);
-        if (device_a != nullptr) cudaFree(device_a);
-        if (device_b != nullptr) cudaFree(device_b);
-        if (device_c != nullptr) cudaFree(device_c);
+    if (!tk_sm7x::test::cuda_ok(cudaStreamCreate(&stream), "cudaStreamCreate")) {
+        return EXIT_FAILURE;
+    }
+
+    const GemmCase cases[] = {
+        {"identity-16x16x16", 16, 16, 16, 16, 16, 16,
+         Pattern::identity_right, 0u, true, true},
+        {"fingerprint-16x16x32", 16, 16, 32, 32, 16, 16,
+         Pattern::fingerprint, 0u, true, false},
+        {"random-32x48x32-strided", 32, 48, 32, 37, 53, 59,
+         Pattern::random, 0x75c0ffeeu, false, false},
+        {"random-32x32x48", 32, 32, 48, 48, 32, 32,
+         Pattern::random, 0x70c0ffeeu, false, false},
     };
 
-    if (!tk_sm7x::test::cuda_ok(cudaStreamCreate(&stream), "cudaStreamCreate") ||
-        !tk_sm7x::test::cuda_ok(cudaMalloc(reinterpret_cast<void**>(&device_a), sizeof(a)),
-                                "cudaMalloc(A)") ||
-        !tk_sm7x::test::cuda_ok(cudaMalloc(reinterpret_cast<void**>(&device_b), sizeof(b)),
-                                "cudaMalloc(B)") ||
-        !tk_sm7x::test::cuda_ok(cudaMalloc(reinterpret_cast<void**>(&device_c), sizeof(c)),
-                                "cudaMalloc(C)") ||
-        !tk_sm7x::test::cuda_ok(cudaMemcpy(device_a, a.data(), sizeof(a), cudaMemcpyHostToDevice),
-                                "cudaMemcpy(A)") ||
-        !tk_sm7x::test::cuda_ok(cudaMemcpy(device_b, b.data(), sizeof(b), cudaMemcpyHostToDevice),
-                                "cudaMemcpy(B)")) {
-        release();
-        return EXIT_FAILURE;
+    bool passed = true;
+    for (const GemmCase& test_case : cases) {
+        passed = run_case(test_case, stream) && passed;
     }
+    passed = run_invalid_cases(stream) && passed;
 
-    const auto run_and_check = [&]() {
-        const cudaError_t launch_status = tk_sm7x::gemm_f16_f16_f32_nn(
-            16, 16, 16, device_a, 16, device_b, 16, device_c, 16, stream);
-        if (!tk_sm7x::test::cuda_ok(launch_status, "gemm_f16_f16_f32_nn") ||
-            !tk_sm7x::test::cuda_ok(cudaStreamSynchronize(stream),
-                                    "cudaStreamSynchronize") ||
-            !tk_sm7x::test::cuda_ok(
-                cudaMemcpy(c.data(), device_c, sizeof(c), cudaMemcpyDeviceToHost),
-                "cudaMemcpy(C)")) {
-            return false;
-        }
-        return verify_identity(a, c);
-    };
-
-    if (!run_and_check()) {
-        release();
+    cudaStreamDestroy(stream);
+    if (!passed) {
         return EXIT_FAILURE;
     }
-
-    seed_stale_launch_error<<<0, 1>>>();
-    if (cudaPeekAtLastError() == cudaSuccess) {
-        std::fprintf(stderr, "failed to seed stale CUDA last-error state\n");
-        release();
-        return EXIT_FAILURE;
-    }
-    if (!run_and_check()) {
-        std::fprintf(stderr, "valid GEMM returned a stale launch error\n");
-        release();
-        return EXIT_FAILURE;
-    }
-    if (!run_compact_invalid_cases(device_a, device_b, device_c, stream)) {
-        release();
-        return EXIT_FAILURE;
-    }
-
-    release();
-    std::printf("compact GEMM: PASS ordinal=%d\n", ordinal);
+    std::printf("GEMM contract: PASS ordinal=%d\n", ordinal);
     return EXIT_SUCCESS;
 }
