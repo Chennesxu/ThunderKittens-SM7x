@@ -93,6 +93,15 @@ std::vector<float> make_reference(const GemmCase& test_case,
                                   const std::vector<__half>& b) {
     std::vector<float> reference(
         static_cast<std::size_t>(test_case.m) * test_case.ldc, kSentinel);
+    if (test_case.pattern == Pattern::identity_right) {
+        for (int row = 0; row < test_case.m; ++row) {
+            for (int col = 0; col < test_case.n; ++col) {
+                reference[static_cast<std::size_t>(row) * test_case.ldc + col] =
+                    __half2float(a[static_cast<std::size_t>(row) * test_case.lda + col]);
+            }
+        }
+        return reference;
+    }
     for (int row = 0; row < test_case.m; ++row) {
         for (int col = 0; col < test_case.n; ++col) {
             double sum = 0.0;
@@ -364,6 +373,8 @@ int main() {
     const GemmCase cases[] = {
         {"identity-16x16x16", 16, 16, 16, 16, 16, 16,
          Pattern::identity_right, 0u, true, true},
+        {"identity-1048576x16x16-grid-y-boundary", 1048576, 16, 16, 16, 16, 16,
+         Pattern::identity_right, 0u, true, false},
         {"fingerprint-16x16x32", 16, 16, 32, 32, 16, 16,
          Pattern::fingerprint, 0u, true, false},
         {"random-32x48x32-strided", 32, 48, 32, 37, 53, 59,
