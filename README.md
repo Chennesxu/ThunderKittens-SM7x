@@ -29,4 +29,4 @@ Early development. There is no usable release yet.
 
 ## License
 
-ThunderKittens is Copyright (c) 2024–2026 HazyResearch and is distributed under the [MIT License](https://github.com/HazyResearch/ThunderKittens/blob/main/LICENSE). Original copyright and license notices will be retained when code is imported.
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
