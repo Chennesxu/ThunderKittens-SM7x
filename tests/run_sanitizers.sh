@@ -18,6 +18,17 @@ if ! command -v compute-sanitizer >/dev/null 2>&1; then
     exit 77
 fi
 
+set +e
+"$gemm_test"
+preflight_status=$?
+set -e
+if [[ $preflight_status -eq 77 ]]; then
+    exit 77
+fi
+if [[ $preflight_status -ne 0 ]]; then
+    exit "$preflight_status"
+fi
+
 if [[ -v CUDA_VISIBLE_DEVICES ]]; then
     echo "Compute Sanitizer preserving CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 else
