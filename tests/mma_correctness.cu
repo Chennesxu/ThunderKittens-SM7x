@@ -70,9 +70,20 @@ int main() {
     __half* device_b = nullptr;
     float* device_c = nullptr;
     const auto release = [&]() {
-        if (device_a != nullptr) cudaFree(device_a);
-        if (device_b != nullptr) cudaFree(device_b);
-        if (device_c != nullptr) cudaFree(device_c);
+        bool released = true;
+        if (device_a != nullptr) {
+            released = tk_sm7x::test::cuda_ok(cudaFree(device_a), "cudaFree(A)") && released;
+            device_a = nullptr;
+        }
+        if (device_b != nullptr) {
+            released = tk_sm7x::test::cuda_ok(cudaFree(device_b), "cudaFree(B)") && released;
+            device_b = nullptr;
+        }
+        if (device_c != nullptr) {
+            released = tk_sm7x::test::cuda_ok(cudaFree(device_c), "cudaFree(C)") && released;
+            device_c = nullptr;
+        }
+        return released;
     };
 
     if (!tk_sm7x::test::cuda_ok(cudaMalloc(reinterpret_cast<void**>(&device_a), sizeof(a)),
@@ -85,7 +96,7 @@ int main() {
                                 "cudaMemcpy(A)") ||
         !tk_sm7x::test::cuda_ok(cudaMemcpy(device_b, b.data(), sizeof(b), cudaMemcpyHostToDevice),
                                 "cudaMemcpy(B)")) {
-        release();
+        static_cast<void>(release());
         return EXIT_FAILURE;
     }
 
@@ -96,7 +107,7 @@ int main() {
         !tk_sm7x::test::cuda_ok(
             cudaMemcpy(actual.data(), device_c, sizeof(actual), cudaMemcpyDeviceToHost),
             "cudaMemcpy(C)")) {
-        release();
+        static_cast<void>(release());
         return EXIT_FAILURE;
     }
 
@@ -105,12 +116,14 @@ int main() {
             std::fprintf(stderr,
                          "mma mismatch row=%d col=%d actual=%g reference=%g\n",
                          index / 16, index % 16, actual[index], reference[index]);
-            release();
+            static_cast<void>(release());
             return EXIT_FAILURE;
         }
     }
 
-    release();
+    if (!release()) {
+        return EXIT_FAILURE;
+    }
     std::printf("mma numerical: PASS ordinal=%d\n", ordinal);
     return EXIT_SUCCESS;
 }

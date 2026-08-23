@@ -176,9 +176,20 @@ bool run_case(const GemmCase& test_case, cudaStream_t stream) {
     __half* device_b = nullptr;
     float* device_c = nullptr;
     const auto release = [&]() {
-        if (device_a != nullptr) cudaFree(device_a);
-        if (device_b != nullptr) cudaFree(device_b);
-        if (device_c != nullptr) cudaFree(device_c);
+        bool released = true;
+        if (device_a != nullptr) {
+            released = tk_sm7x::test::cuda_ok(cudaFree(device_a), "cudaFree(A)") && released;
+            device_a = nullptr;
+        }
+        if (device_b != nullptr) {
+            released = tk_sm7x::test::cuda_ok(cudaFree(device_b), "cudaFree(B)") && released;
+            device_b = nullptr;
+        }
+        if (device_c != nullptr) {
+            released = tk_sm7x::test::cuda_ok(cudaFree(device_c), "cudaFree(C)") && released;
+            device_c = nullptr;
+        }
+        return released;
     };
 
     const std::size_t a_bytes = a.size() * sizeof(__half);
@@ -199,7 +210,7 @@ bool run_case(const GemmCase& test_case, cudaStream_t stream) {
         !tk_sm7x::test::cuda_ok(
             cudaMemcpy(device_c, actual.data(), c_bytes, cudaMemcpyHostToDevice),
             "cudaMemcpy(C sentinel)")) {
-        release();
+        static_cast<void>(release());
         return false;
     }
 
@@ -207,7 +218,7 @@ bool run_case(const GemmCase& test_case, cudaStream_t stream) {
         seed_stale_launch_error<<<0, 1>>>();
         if (cudaPeekAtLastError() == cudaSuccess) {
             std::fprintf(stderr, "%s failed to seed stale CUDA error\n", test_case.name);
-            release();
+            static_cast<void>(release());
             return false;
         }
     }
@@ -222,23 +233,28 @@ bool run_case(const GemmCase& test_case, cudaStream_t stream) {
         !tk_sm7x::test::cuda_ok(
             cudaMemcpy(actual.data(), device_c, c_bytes, cudaMemcpyDeviceToHost),
             "cudaMemcpy(C)")) {
-        release();
+        static_cast<void>(release());
         return false;
     }
 
     const bool matched = compare_output(test_case, actual, reference);
-    release();
-    if (matched) {
-        std::printf("%s: PASS\n", test_case.name);
+    if (!matched) {
+        static_cast<void>(release());
+        return false;
     }
-    return matched;
+    if (!release()) {
+        return false;
+    }
+    std::printf("%s: PASS\n", test_case.name);
+    return true;
 }
 
 bool expect_invalid(const char* name,
                     const GemmArguments& arguments,
                     float* observed_c,
                     std::size_t c_elements,
-                    cudaStream_t stream) {
+                    cudaStream_t stream,
+                    bool seed_stale_error) {
     std::vector<float> sentinel(c_elements, kSentinel);
     if (!tk_sm7x::test::cuda_ok(
             cudaMemcpy(observed_c, sentinel.data(), c_elements * sizeof(float),
@@ -248,14 +264,36 @@ bool expect_invalid(const char* name,
     }
 
     static_cast<void>(cudaGetLastError());
+    cudaError_t stale_status = cudaSuccess;
+    if (seed_stale_error) {
+        seed_stale_launch_error<<<0, 1>>>();
+        stale_status = cudaPeekAtLastError();
+        if (stale_status == cudaSuccess) {
+            std::fprintf(stderr, "%s failed to seed stale CUDA error\n", name);
+            return false;
+        }
+    }
     const cudaError_t status = tk_sm7x::gemm_f16_f16_f32_nn(
         arguments.m, arguments.n, arguments.k,
         arguments.a, arguments.lda, arguments.b, arguments.ldb,
         arguments.c, arguments.ldc, stream);
-    bool passed = status == cudaErrorInvalidValue;
-    if (!passed) {
+    bool passed = true;
+    if (status != cudaErrorInvalidValue) {
         std::fprintf(stderr, "%s returned %s instead of cudaErrorInvalidValue\n",
                      name, cudaGetErrorString(status));
+        passed = false;
+    }
+    if (seed_stale_error) {
+        const cudaError_t preserved_status = cudaPeekAtLastError();
+        if (preserved_status != stale_status) {
+            std::fprintf(stderr, "%s did not preserve stale CUDA error\n", name);
+            passed = false;
+        }
+        if (cudaGetLastError() != stale_status ||
+            cudaPeekAtLastError() != cudaSuccess) {
+            std::fprintf(stderr, "%s stale CUDA error was not consumed exactly once\n", name);
+            passed = false;
+        }
     }
     if (!tk_sm7x::test::cuda_ok(cudaStreamSynchronize(stream),
                                 "invalid-case cudaStreamSynchronize") ||
@@ -280,6 +318,25 @@ bool run_invalid_cases(cudaStream_t stream) {
     __half* device_b = nullptr;
     float* device_c = nullptr;
     constexpr std::size_t elements = 256;
+    const auto release = [&]() {
+        bool released = true;
+        if (device_a != nullptr) {
+            released = tk_sm7x::test::cuda_ok(
+                cudaFree(device_a), "cudaFree(invalid A)") && released;
+            device_a = nullptr;
+        }
+        if (device_b != nullptr) {
+            released = tk_sm7x::test::cuda_ok(
+                cudaFree(device_b), "cudaFree(invalid B)") && released;
+            device_b = nullptr;
+        }
+        if (device_c != nullptr) {
+            released = tk_sm7x::test::cuda_ok(
+                cudaFree(device_c), "cudaFree(invalid C)") && released;
+            device_c = nullptr;
+        }
+        return released;
+    };
     if (!tk_sm7x::test::cuda_ok(
             cudaMalloc(reinterpret_cast<void**>(&device_a), elements * sizeof(__half)),
             "cudaMalloc(invalid A)") ||
@@ -289,21 +346,23 @@ bool run_invalid_cases(cudaStream_t stream) {
         !tk_sm7x::test::cuda_ok(
             cudaMalloc(reinterpret_cast<void**>(&device_c), elements * sizeof(float)),
             "cudaMalloc(invalid C)")) {
-        if (device_a != nullptr) cudaFree(device_a);
-        if (device_b != nullptr) cudaFree(device_b);
-        if (device_c != nullptr) cudaFree(device_c);
+        static_cast<void>(release());
         return false;
     }
 
     const GemmArguments base{16, 16, 16, device_a, 16, device_b, 16, device_c, 16};
     bool passed = true;
     const auto check = [&](const char* name, const GemmArguments& arguments) {
-        passed = expect_invalid(name, arguments, device_c, elements, stream) && passed;
+        passed = expect_invalid(name, arguments, device_c, elements, stream, false) && passed;
+    };
+    const auto check_preserving_stale_error =
+        [&](const char* name, const GemmArguments& arguments) {
+            passed = expect_invalid(name, arguments, device_c, elements, stream, true) && passed;
     };
 
     GemmArguments arguments = base;
     arguments.a = nullptr;
-    check("null A", arguments);
+    check_preserving_stale_error("null A with stale error", arguments);
     arguments = base;
     arguments.b = nullptr;
     check("null B", arguments);
@@ -347,13 +406,15 @@ bool run_invalid_cases(cudaStream_t stream) {
     arguments.ldc = 15;
     check("short ldc", arguments);
 
-    cudaFree(device_a);
-    cudaFree(device_b);
-    cudaFree(device_c);
-    if (passed) {
-        std::printf("invalid argument matrix: PASS\n");
+    if (!passed) {
+        static_cast<void>(release());
+        return false;
     }
-    return passed;
+    if (!release()) {
+        return false;
+    }
+    std::printf("invalid argument matrix: PASS\n");
+    return true;
 }
 
 }  // namespace
@@ -389,8 +450,11 @@ int main() {
     }
     passed = run_invalid_cases(stream) && passed;
 
-    cudaStreamDestroy(stream);
     if (!passed) {
+        static_cast<void>(cudaStreamDestroy(stream));
+        return EXIT_FAILURE;
+    }
+    if (!tk_sm7x::test::cuda_ok(cudaStreamDestroy(stream), "cudaStreamDestroy")) {
         return EXIT_FAILURE;
     }
     std::printf("GEMM contract: PASS ordinal=%d\n", ordinal);
