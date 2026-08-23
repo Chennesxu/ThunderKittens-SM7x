@@ -25,7 +25,14 @@ This repository aims to maintain a small, architecture-specific implementation f
 
 ## Status
 
-Early development. There is no usable release yet.
+The first WMMA reference baseline builds native SM70 and SM75 targets and provides row-major FP16 × FP16 → FP32 GEMM for positive 16-aligned dimensions and non-compact leading dimensions.
+
+The API enqueues asynchronously on the supplied CUDA stream. A, B, and C must be device-accessible, alive through stream completion, and non-overlapping; before completion, A/B cannot be modified and C cannot be read or written except by accesses ordered with the GEMM on that stream.
+
+- SM75 correctness and Compute Sanitizer checks pass on the identified Turing device.
+- Compile and codegen checks pass with CUDA 11.0.3 and the local CUDA 12.4 toolkit.
+- SM70 is compile-tested and remains experimental until it is run on Volta hardware.
+- No performance claims are made for this correctness baseline.
 
 ## License
 
