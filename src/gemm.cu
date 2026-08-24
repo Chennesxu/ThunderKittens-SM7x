@@ -18,9 +18,9 @@ __global__ void gemm_kernel(
 
     const int lane = static_cast<int>(threadIdx.x);
     const int n0 = static_cast<int>(blockIdx.x) * 16;
-    for (int m0 = static_cast<int>(blockIdx.y) * 16;
-         m0 < m;
-         m0 += static_cast<int>(gridDim.y) * 16) {
+    for (std::size_t m0 = static_cast<std::size_t>(blockIdx.y) * 16;
+         m0 < static_cast<std::size_t>(m);
+         m0 += static_cast<std::size_t>(gridDim.y) * 16) {
         detail::active_warp_mma::accumulator accumulator;
         detail::active_warp_mma::clear(accumulator);
 
@@ -29,7 +29,7 @@ __global__ void gemm_kernel(
                 const int row = linear / 16;
                 const int col = linear % 16;
                 const std::size_t a_index =
-                    static_cast<std::size_t>(m0 + row) * static_cast<std::size_t>(lda) +
+                    (m0 + static_cast<std::size_t>(row)) * static_cast<std::size_t>(lda) +
                     static_cast<std::size_t>(k0 + col);
                 const std::size_t b_index =
                     static_cast<std::size_t>(k0 + row) * static_cast<std::size_t>(ldb) +
@@ -48,7 +48,7 @@ __global__ void gemm_kernel(
             const int row = linear / 16;
             const int col = linear % 16;
             const std::size_t c_index =
-                static_cast<std::size_t>(m0 + row) * static_cast<std::size_t>(ldc) +
+                (m0 + static_cast<std::size_t>(row)) * static_cast<std::size_t>(ldc) +
                 static_cast<std::size_t>(n0 + col);
             c[c_index] = c_shared[linear];
         }
