@@ -25,10 +25,14 @@ __global__ void mma_correctness_kernel(
     }
     __syncwarp(0xffffffffu);
 
+    tk_sm7x::detail::active_warp_mma::fragment_a a_fragment;
+    tk_sm7x::detail::active_warp_mma::fragment_b b_fragment;
+    tk_sm7x::detail::active_warp_mma::load_a(a_fragment, a_shared, 16);
+    tk_sm7x::detail::active_warp_mma::load_b(b_fragment, b_shared, 16);
     tk_sm7x::detail::active_warp_mma::accumulator accumulator;
     tk_sm7x::detail::active_warp_mma::clear(accumulator);
-    tk_sm7x::detail::active_warp_mma::mma(accumulator, a_shared, b_shared);
-    tk_sm7x::detail::active_warp_mma::store(c_shared, accumulator);
+    tk_sm7x::detail::active_warp_mma::mma(accumulator, a_fragment, b_fragment);
+    tk_sm7x::detail::active_warp_mma::store(c_shared, accumulator, 16);
     __syncwarp(0xffffffffu);
 
     for (int linear = lane; linear < 256; linear += 32) {

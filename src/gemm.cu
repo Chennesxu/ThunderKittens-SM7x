@@ -2,7 +2,7 @@
 
 #include <cstddef>
 
-#include "tk_sm7x/mma.cuh"
+#include "tk_sm7x/tile.cuh"
 
 namespace tk_sm7x {
 namespace {
@@ -12,46 +12,36 @@ __global__ void gemm_kernel(
     const __half* a, int lda,
     const __half* b, int ldb,
     float* c, int ldc) {
-    __shared__ __align__(32) __half a_shared[256];
-    __shared__ __align__(32) __half b_shared[256];
-    __shared__ __align__(32) float c_shared[256];
+    __shared__ st<__half, 16, 16, row_major> a_shared;
+    __shared__ st<__half, 16, 16, col_major> b_shared;
+    __shared__ st<float, 16, 16, row_major> c_shared;
 
-    const int lane = static_cast<int>(threadIdx.x);
-    const int n0 = static_cast<int>(blockIdx.x) * 16;
+    const gl<const __half> a_global{a, lda};
+    const gl<const __half> b_global{b, ldb};
+    const gl<float> c_global{c, ldc};
+
+    const std::size_t n0 = static_cast<std::size_t>(blockIdx.x) * 16;
     for (std::size_t m0 = static_cast<std::size_t>(blockIdx.y) * 16;
          m0 < static_cast<std::size_t>(m);
          m0 += static_cast<std::size_t>(gridDim.y) * 16) {
-        detail::active_warp_mma::accumulator accumulator;
-        detail::active_warp_mma::clear(accumulator);
+        rt_c accumulator;
+        zero(accumulator);
 
-        for (int k0 = 0; k0 < k; k0 += 16) {
-            for (int linear = lane; linear < 256; linear += 32) {
-                const int row = linear / 16;
-                const int col = linear % 16;
-                const std::size_t a_index =
-                    (m0 + static_cast<std::size_t>(row)) * static_cast<std::size_t>(lda) +
-                    static_cast<std::size_t>(k0 + col);
-                const std::size_t b_index =
-                    static_cast<std::size_t>(k0 + row) * static_cast<std::size_t>(ldb) +
-                    static_cast<std::size_t>(n0 + col);
-                a_shared[linear] = a[a_index];
-                b_shared[col * 16 + row] = b[b_index];
-            }
+        for (std::size_t k0 = 0; k0 < static_cast<std::size_t>(k); k0 += 16) {
+            load(a_shared, a_global, m0, k0);
+            load(b_shared, b_global, k0, n0);
             __syncwarp(0xffffffffu);
-            detail::active_warp_mma::mma(accumulator, a_shared, b_shared);
+            rt_a a_fragment;
+            rt_b b_fragment;
+            load(a_fragment, a_shared);
+            load(b_fragment, b_shared);
+            mma(accumulator, a_fragment, b_fragment);
             __syncwarp(0xffffffffu);
         }
 
-        detail::active_warp_mma::store(c_shared, accumulator);
+        store(c_shared, accumulator);
         __syncwarp(0xffffffffu);
-        for (int linear = lane; linear < 256; linear += 32) {
-            const int row = linear / 16;
-            const int col = linear % 16;
-            const std::size_t c_index =
-                (m0 + static_cast<std::size_t>(row)) * static_cast<std::size_t>(ldc) +
-                static_cast<std::size_t>(n0 + col);
-            c[c_index] = c_shared[linear];
-        }
+        store(c_global, c_shared, m0, n0);
     }
 }
 

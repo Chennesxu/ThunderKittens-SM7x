@@ -34,10 +34,10 @@ test-mma-sm75: build-mma-sm75
 	if [[ $$status -eq 77 ]]; then echo "SKIP: MMA SM75 runtime validation pending (binary exit 77)"; exit 0; fi; \
 	exit $$status
 
-$(BUILD_DIR)/gemm-sm70: src/gemm.cu tests/gemm_correctness.cu tests/test_utils.cuh include/tk_sm7x/arch.cuh include/tk_sm7x/mma.cuh include/tk_sm7x/gemm.cuh | $(BUILD_DIR)
+$(BUILD_DIR)/gemm-sm70: src/gemm.cu tests/gemm_correctness.cu tests/test_utils.cuh include/tk_sm7x/arch.cuh include/tk_sm7x/mma.cuh include/tk_sm7x/tile.cuh include/tk_sm7x/gemm.cuh | $(BUILD_DIR)
 	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM70_FLAGS) src/gemm.cu tests/gemm_correctness.cu -o $@
 
-$(BUILD_DIR)/gemm-sm75: src/gemm.cu tests/gemm_correctness.cu tests/test_utils.cuh include/tk_sm7x/arch.cuh include/tk_sm7x/mma.cuh include/tk_sm7x/gemm.cuh | $(BUILD_DIR)
+$(BUILD_DIR)/gemm-sm75: src/gemm.cu tests/gemm_correctness.cu tests/test_utils.cuh include/tk_sm7x/arch.cuh include/tk_sm7x/mma.cuh include/tk_sm7x/tile.cuh include/tk_sm7x/gemm.cuh | $(BUILD_DIR)
 	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) src/gemm.cu tests/gemm_correctness.cu -o $@
 
 build-sm70: $(BUILD_DIR)/gemm-sm70
@@ -49,7 +49,7 @@ test-sm75: build-sm75
 	if [[ $$status -eq 77 ]]; then echo "SKIP: GEMM SM75 runtime validation pending (binary exit 77)"; exit 0; fi; \
 	exit $$status
 
-$(BUILD_DIR)/gemm-throughput-sm75: bench/gemm_throughput.cu tests/test_utils.cuh src/gemm.cu include/tk_sm7x/arch.cuh include/tk_sm7x/mma.cuh include/tk_sm7x/gemm.cuh | $(BUILD_DIR)
+$(BUILD_DIR)/gemm-throughput-sm75: bench/gemm_throughput.cu tests/test_utils.cuh src/gemm.cu include/tk_sm7x/arch.cuh include/tk_sm7x/mma.cuh include/tk_sm7x/tile.cuh include/tk_sm7x/gemm.cuh | $(BUILD_DIR)
 	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) src/gemm.cu bench/gemm_throughput.cu -o $@
 
 build-bench-sm75: $(BUILD_DIR)/gemm-throughput-sm75
