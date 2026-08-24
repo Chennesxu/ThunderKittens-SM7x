@@ -18,18 +18,20 @@ if [[ ! -x "$cuobjdump_bin" ]]; then
 fi
 
 compile_target() {
-    local label=$1
-    local macro=$2
-    local compute=$3
-    local sm=$4
+    local prefix=$1
+    local source=$2
+    local label=$3
+    local macro=$4
+    local compute=$5
+    local sm=$6
     "$nvcc_bin" -std=c++17 -O3 -I"$root_dir/include" "-D$macro" \
-        --ptx "-arch=$compute" "$root_dir/tests/codegen_mma.cu" \
-        -o "$build_dir/mma-$label.ptx"
+        --ptx "-arch=$compute" "$root_dir/$source" \
+        -o "$build_dir/$prefix-$label.ptx"
     "$nvcc_bin" -std=c++17 -O3 -I"$root_dir/include" "-D$macro" \
-        --cubin "-arch=$sm" "$root_dir/tests/codegen_mma.cu" \
-        -o "$build_dir/mma-$label.cubin"
-    "$cuobjdump_bin" --dump-sass "$build_dir/mma-$label.cubin" \
-        >"$build_dir/mma-$label.sass"
+        --cubin "-arch=$sm" "$root_dir/$source" \
+        -o "$build_dir/$prefix-$label.cubin"
+    "$cuobjdump_bin" --dump-sass "$build_dir/$prefix-$label.cubin" \
+        >"$build_dir/$prefix-$label.sass"
 }
 
 expect_backend_mismatch() {
@@ -72,13 +74,17 @@ reject_pattern() {
     fi
 }
 
-compile_target sm70 KITTENS_SM70 compute_70 sm_70
-compile_target sm75 KITTENS_SM75 compute_75 sm_75
+compile_target mma tests/codegen_mma.cu sm70 KITTENS_SM70 compute_70 sm_70
+compile_target mma tests/codegen_mma.cu sm75 KITTENS_SM75 compute_75 sm_75
+compile_target gemm src/gemm.cu sm70 KITTENS_SM70 compute_70 sm_70
+compile_target gemm src/gemm.cu sm75 KITTENS_SM75 compute_75 sm_75
 expect_backend_mismatch sm70 KITTENS_SM70 sm_70
 expect_backend_mismatch sm75 KITTENS_SM75 sm_75
 
-require_pattern "$build_dir/mma-sm70.ptx" '\.target[[:space:]]+sm_70' "sm_70 target"
-require_pattern "$build_dir/mma-sm75.ptx" '\.target[[:space:]]+sm_75' "sm_75 target"
+for prefix in mma gemm; do
+    require_pattern "$build_dir/$prefix-sm70.ptx" '\.target[[:space:]]+sm_70' "sm_70 target"
+    require_pattern "$build_dir/$prefix-sm75.ptx" '\.target[[:space:]]+sm_75' "sm_75 target"
+done
 
 version_text=$("$nvcc_bin" --version)
 if grep -Fq 'release 12.4' <<<"$version_text"; then
@@ -98,7 +104,8 @@ else
     store='wmma\.store\.d\.sync\.aligned\.row\.m16n16k16\.shared\.f32'
 fi
 
-for ptx in "$build_dir/mma-sm70.ptx" "$build_dir/mma-sm75.ptx"; do
+for ptx in "$build_dir/mma-sm70.ptx" "$build_dir/mma-sm75.ptx" \
+           "$build_dir/gemm-sm70.ptx" "$build_dir/gemm-sm75.ptx"; do
     require_pattern "$ptx" "$load_a" "WMMA A load"
     require_pattern "$ptx" "$load_b" "WMMA B load"
     require_pattern "$ptx" "$mma" "WMMA FP32 accumulate"
@@ -107,9 +114,11 @@ for ptx in "$build_dir/mma-sm70.ptx" "$build_dir/mma-sm75.ptx"; do
         "SM80+ instruction"
 done
 
-reject_pattern "$build_dir/mma-sm70.ptx" 'ldmatrix|m16n8k8|m16n8k16' \
-    "SM75+ matrix instruction"
-for sass in "$build_dir/mma-sm70.sass" "$build_dir/mma-sm75.sass"; do
+for ptx in "$build_dir/mma-sm70.ptx" "$build_dir/gemm-sm70.ptx"; do
+    reject_pattern "$ptx" 'ldmatrix|m16n8k8|m16n8k16' "SM75+ matrix instruction"
+done
+for sass in "$build_dir/mma-sm70.sass" "$build_dir/mma-sm75.sass" \
+            "$build_dir/gemm-sm70.sass" "$build_dir/gemm-sm75.sass"; do
     require_pattern "$sass" 'HMMA' "Tensor Core SASS"
     reject_pattern "$sass" 'FFMA' "scalar FFMA fallback"
 done
