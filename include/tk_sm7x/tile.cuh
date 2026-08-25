@@ -24,16 +24,18 @@ struct gl {
 // architecture MMA fragment loads.
 template <class T, int R, int C, class Layout = row_major>
 struct alignas(32) st {
+    static_assert(std::is_same<Layout, row_major>::value ||
+                      std::is_same<Layout, col_major>::value,
+                  "shared tile layout must be row_major or col_major");
+
     T data[static_cast<std::size_t>(R) * C];
 
     // linear enumerates the tile in row-major traversal order, which is the
     // order that keeps consecutive lanes on consecutive global addresses.
-    __device__ static __forceinline__ int offset(int linear) {
-        if constexpr (std::is_same<Layout, row_major>::value) {
-            return linear;
-        } else {
-            return (linear % C) * R + linear / C;
-        }
+    __device__ static __forceinline__ constexpr int offset(int linear) {
+        return std::is_same<Layout, row_major>::value
+                   ? linear
+                   : (linear % C) * R + linear / C;
     }
 
     __device__ static __forceinline__ constexpr int leading_dimension() {

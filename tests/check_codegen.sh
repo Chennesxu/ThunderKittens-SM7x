@@ -54,6 +54,26 @@ expect_backend_mismatch() {
     fi
 }
 
+expect_layout_reject() {
+    local label=$1
+    local macro=$2
+    local sm=$3
+    local log="$build_dir/tile-layout-reject-$label.log"
+    rm -f -- "$build_dir/tile-layout-reject-$label.o" "$log"
+    set +e
+    "$nvcc_bin" -std=c++17 -I"$root_dir/include" "-D$macro" "-arch=$sm" \
+        -c "$root_dir/tests/tile_layout_reject.cu" \
+        -o "$build_dir/tile-layout-reject-$label.o" >"$log" 2>&1
+    local status=$?
+    set -e
+    if [[ $status -eq 0 ]] || ! grep -Fq \
+        "shared tile layout must be row_major or col_major" "$log"; then
+        echo "unsupported shared tile layout gate failed: $label" >&2
+        sed -n '1,120p' "$log" >&2
+        exit 1
+    fi
+}
+
 require_pattern() {
     local file=$1
     local pattern=$2
@@ -80,6 +100,8 @@ compile_target gemm src/gemm.cu sm70 KITTENS_SM70 compute_70 sm_70
 compile_target gemm src/gemm.cu sm75 KITTENS_SM75 compute_75 sm_75
 expect_backend_mismatch sm70 KITTENS_SM70 sm_70
 expect_backend_mismatch sm75 KITTENS_SM75 sm_75
+expect_layout_reject sm70 KITTENS_SM70 sm_70
+expect_layout_reject sm75 KITTENS_SM75 sm_75
 
 for prefix in mma gemm; do
     require_pattern "$build_dir/$prefix-sm70.ptx" '\.target[[:space:]]+sm_70' "sm_70 target"
