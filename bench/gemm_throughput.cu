@@ -79,10 +79,14 @@ bool measure(const shape& s, double* gflops) {
         return false;
     }
 
-    cudaEvent_t start;
-    cudaEvent_t stop;
-    if (!cuda_ok(cudaEventCreate(&start), "cudaEventCreate(start)") ||
-        !cuda_ok(cudaEventCreate(&stop), "cudaEventCreate(stop)")) {
+    cudaEvent_t start = nullptr;
+    cudaEvent_t stop = nullptr;
+    if (!cuda_ok(cudaEventCreate(&start), "cudaEventCreate(start)")) {
+        static_cast<void>(release(a, b, c));
+        return false;
+    }
+    if (!cuda_ok(cudaEventCreate(&stop), "cudaEventCreate(stop)")) {
+        static_cast<void>(cudaEventDestroy(start));
         static_cast<void>(release(a, b, c));
         return false;
     }
