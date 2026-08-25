@@ -434,7 +434,7 @@ int main() {
     const GemmCase cases[] = {
         {"identity-16x16x16", 16, 16, 16, 16, 16, 16,
          Pattern::identity_right, 0u, true, true},
-        {"identity-1048576x16x16-grid-y-boundary", 1048576, 16, 16, 16, 16, 16,
+        {"identity-8388608x16x16-grid-y-boundary", 8388608, 16, 16, 16, 16, 16,
          Pattern::identity_right, 0u, true, false},
         {"fingerprint-16x16x32", 16, 16, 32, 32, 16, 16,
          Pattern::fingerprint, 0u, true, false},
@@ -442,6 +442,8 @@ int main() {
          Pattern::random, 0x75c0ffeeu, false, false},
         {"random-32x32x48", 32, 32, 48, 48, 32, 32,
          Pattern::random, 0x70c0ffeeu, false, false},
+        {"random-256x384x32-strided-multi-cta", 256, 384, 32, 41, 397, 401,
+         Pattern::random, 0x5eed1234u, false, false},
     };
 
     bool passed = true;
