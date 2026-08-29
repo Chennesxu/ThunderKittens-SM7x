@@ -7,16 +7,25 @@
 namespace tk_sm7x {
 namespace {
 
-constexpr int kTileM = 128;
-constexpr int kTileN = 128;
-constexpr int kWarpsM = 4;
-constexpr int kWarpsN = 2;
+constexpr int kLargeTileM = 128;
+constexpr int kLargeTileN = 128;
+constexpr int kLargeWarpsM = 4;
+constexpr int kLargeWarpsN = 2;
 
-constexpr int kWarps = kWarpsM * kWarpsN;
-constexpr int kThreads = kWarps * 32;
-constexpr int kFragsM = kTileM / kWarpsM / 16;
-constexpr int kFragsN = kTileN / kWarpsN / 16;
+constexpr int kSmallTileM = 64;
+constexpr int kSmallTileN = 64;
+constexpr int kSmallWarpsM = 2;
+constexpr int kSmallWarpsN = 2;
+
+// Below this many large-tile CTAs the grid is too small to pay for the large
+// tile's register pressure, and the smaller tile wins despite its lower
+// arithmetic intensity. Measured on 72 SMs: the small tile leads up to 56 CTAs
+// and the large tile leads from 64, across square, rectangular and K-varying
+// shapes alike.
+constexpr std::size_t kSmallTileCtaThreshold = 64u;
+
 constexpr unsigned int kMaxGridY = 65535u;
+
 constexpr int kMaxExtent = 2147483632;
 
 // Forming extent + tile - 1 overflows for extents near the top of the supported
@@ -29,18 +38,44 @@ constexpr unsigned int tile_count(int extent, int tile) {
            (extent % tile != 0 ? 1u : 0u);
 }
 
-static_assert(tile_count(kMaxExtent, kTileM) > 0u,
+static_assert(tile_count(kMaxExtent, kSmallTileM) > 0u &&
+                  tile_count(kMaxExtent, kLargeTileM) > 0u,
               "M tile count must not overflow at the largest supported extent");
-static_assert(tile_count(kMaxExtent, kTileN) > 0u,
+static_assert(tile_count(kMaxExtent, kSmallTileN) > 0u &&
+                  tile_count(kMaxExtent, kLargeTileN) > 0u,
               "N tile count must not overflow at the largest supported extent");
+// The single definition of tile selection. The launcher and the assertions below
+// share it so a threshold change cannot silently route every correctness case
+// through one kernel.
+constexpr std::size_t large_cta_count(int m, int n) {
+    return static_cast<std::size_t>(tile_count(m, kLargeTileM)) *
+           static_cast<std::size_t>(tile_count(n, kLargeTileN));
+}
 
-__global__ __launch_bounds__(kThreads) void gemm_kernel(
+constexpr bool use_small_tile(int m, int n) {
+    return large_cta_count(m, n) < kSmallTileCtaThreshold;
+}
+
+static_assert(use_small_tile(256, 384),
+              "small-tile correctness case must exercise the small kernel");
+static_assert(!use_small_tile(1024, 1024),
+              "large-tile correctness case must exercise the large kernel");
+static_assert(!use_small_tile(8388608, 16),
+              "grid-y boundary case must exercise the large kernel");
+
+template <int TileM, int TileN, int WarpsM, int WarpsN>
+__global__ __launch_bounds__(WarpsM * WarpsN * 32) void gemm_kernel(
     int m, int n, int k,
     const __half* a, int lda,
     const __half* b, int ldb,
     float* c, int ldc) {
-    __shared__ st<__half, kTileM, 16, row_major> a_shared;
-    __shared__ st<__half, 16, kTileN, col_major> b_shared;
+    constexpr int kWarps = WarpsM * WarpsN;
+    constexpr int kThreads = kWarps * 32;
+    constexpr int kFragsM = TileM / WarpsM / 16;
+    constexpr int kFragsN = TileN / WarpsN / 16;
+
+    __shared__ st<__half, TileM, 16, row_major> a_shared;
+    __shared__ st<__half, 16, TileN, col_major> b_shared;
     __shared__ st<float, 16, 16, row_major> c_stage[kWarps];
 
     const gl<const __half> a_global{a, m, k, lda};
@@ -48,13 +83,13 @@ __global__ __launch_bounds__(kThreads) void gemm_kernel(
     const gl<float> c_global{c, m, n, ldc};
 
     const int warp = static_cast<int>(threadIdx.x) / 32;
-    const int warp_m = warp / kWarpsN;
-    const int warp_n = warp % kWarpsN;
+    const int warp_m = warp / WarpsN;
+    const int warp_n = warp % WarpsN;
 
-    const std::size_t n0 = static_cast<std::size_t>(blockIdx.x) * kTileN;
-    for (std::size_t m0 = static_cast<std::size_t>(blockIdx.y) * kTileM;
+    const std::size_t n0 = static_cast<std::size_t>(blockIdx.x) * TileN;
+    for (std::size_t m0 = static_cast<std::size_t>(blockIdx.y) * TileM;
          m0 < static_cast<std::size_t>(m);
-         m0 += static_cast<std::size_t>(gridDim.y) * kTileM) {
+         m0 += static_cast<std::size_t>(gridDim.y) * TileM) {
         rt_c accumulators[kFragsM][kFragsN];
 #pragma unroll
         for (int i = 0; i < kFragsM; ++i) {
@@ -105,6 +140,20 @@ __global__ __launch_bounds__(kThreads) void gemm_kernel(
     }
 }
 
+template <int TileM, int TileN, int WarpsM, int WarpsN>
+void launch(
+    int m, int n, int k,
+    const __half* a, int lda,
+    const __half* b, int ldb,
+    float* c, int ldc,
+    cudaStream_t stream) {
+    const unsigned int m_tiles = tile_count(m, TileM);
+    const dim3 grid(tile_count(n, TileN),
+                    m_tiles < kMaxGridY ? m_tiles : kMaxGridY);
+    gemm_kernel<TileM, TileN, WarpsM, WarpsN>
+        <<<grid, WarpsM * WarpsN * 32, 0, stream>>>(m, n, k, a, lda, b, ldb, c, ldc);
+}
+
 }  // namespace
 
 cudaError_t gemm_f16_f16_f32_nn(
@@ -120,11 +169,14 @@ cudaError_t gemm_f16_f16_f32_nn(
         return cudaErrorInvalidValue;
     }
 
-    const unsigned int m_tiles = tile_count(m, kTileM);
-    const dim3 grid(tile_count(n, kTileN),
-                    m_tiles < kMaxGridY ? m_tiles : kMaxGridY);
     static_cast<void>(cudaGetLastError());
-    gemm_kernel<<<grid, kThreads, 0, stream>>>(m, n, k, a, lda, b, ldb, c, ldc);
+    if (use_small_tile(m, n)) {
+        launch<kSmallTileM, kSmallTileN, kSmallWarpsM, kSmallWarpsN>(
+            m, n, k, a, lda, b, ldb, c, ldc, stream);
+    } else {
+        launch<kLargeTileM, kLargeTileN, kLargeWarpsM, kLargeWarpsN>(
+            m, n, k, a, lda, b, ldb, c, ldc, stream);
+    }
     return cudaGetLastError();
 }
 

@@ -94,6 +94,42 @@ reject_pattern() {
     fi
 }
 
+require_tensor_core_per_kernel() {
+    local sass=$1
+    local expected=$2
+    local report
+    report=$(awk -v RS='Function : ' '
+        NR > 1 {
+            n = split($0, line, "\n")
+            if (line[1] !~ /gemm_kernel/) next
+            hmma = 0
+            ffma = 0
+            for (i = 1; i <= n; i++) {
+                if (line[i] ~ /HMMA/) hmma++
+                if (line[i] ~ /FFMA/) ffma++
+            }
+            printf "%s %d %d\n", line[1], hmma, ffma
+        }' "$sass")
+    local seen
+    seen=$(printf '%s\n' "$report" | grep -c . || true)
+    if [[ "$seen" -ne "$expected" ]]; then
+        echo "expected $expected GEMM kernels in $sass, found $seen" >&2
+        printf '%s\n' "$report" >&2
+        exit 1
+    fi
+    while read -r name hmma ffma; do
+        [[ -z "$name" ]] && continue
+        if [[ "$hmma" -eq 0 ]]; then
+            echo "GEMM kernel without Tensor Core SASS: $name in $sass" >&2
+            exit 1
+        fi
+        if [[ "$ffma" -ne 0 ]]; then
+            echo "GEMM kernel with scalar FFMA fallback: $name in $sass" >&2
+            exit 1
+        fi
+    done <<<"$report"
+}
+
 compile_target mma tests/codegen_mma.cu sm70 KITTENS_SM70 compute_70 sm_70
 compile_target mma tests/codegen_mma.cu sm75 KITTENS_SM75 compute_75 sm_75
 compile_target gemm src/gemm.cu sm70 KITTENS_SM70 compute_70 sm_70
@@ -144,5 +180,10 @@ for sass in "$build_dir/mma-sm70.sass" "$build_dir/mma-sm75.sass" \
     require_pattern "$sass" 'HMMA' "Tensor Core SASS"
     reject_pattern "$sass" 'FFMA' "scalar FFMA fallback"
 done
+
+# Whole-file checks cannot see one dispatched kernel degrading while another
+# still emits HMMA, so every GEMM kernel instantiation is inspected on its own.
+require_tensor_core_per_kernel "$build_dir/gemm-sm70.sass" 2
+require_tensor_core_per_kernel "$build_dir/gemm-sm75.sass" 2
 
 echo "codegen gate: PASS"

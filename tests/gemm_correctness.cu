@@ -442,8 +442,10 @@ int main() {
          Pattern::random, 0x75c0ffeeu, false, false},
         {"random-32x32x48", 32, 32, 48, 48, 32, 32,
          Pattern::random, 0x70c0ffeeu, false, false},
-        {"random-256x384x32-strided-multi-cta", 256, 384, 32, 41, 397, 401,
+        {"random-256x384x32-strided-small-tile", 256, 384, 32, 41, 397, 401,
          Pattern::random, 0x5eed1234u, false, false},
+        {"random-1024x1024x32-strided-large-tile", 1024, 1024, 32, 37, 1039, 1051,
+         Pattern::random, 0x1a2b3c4du, false, false},
     };
 
     bool passed = true;
