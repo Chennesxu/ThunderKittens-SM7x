@@ -157,8 +157,29 @@ require_kernel_opcode() {
     fi
 }
 
+require_ptx_kernel_opcode() {
+    local ptx=$1
+    local kernel=$2
+    local opcode=$3
+    local expected=$4
+    local seen
+    seen=$(awk -v kernel="$kernel" -v opcode="$opcode" '
+        $0 ~ "^[[:space:]]*[.]visible[[:space:]]+[.]entry[[:space:]]+" kernel "[(]" {
+            found = 1
+            active = 1
+        }
+        active && $0 ~ opcode { count++ }
+        active && $0 ~ /^[[:space:]]*[}]/ { active = 0 }
+        END { if (!found) { print "absent"; exit } print count + 0 }' "$ptx")
+    if [[ "$seen" != "$expected" ]]; then
+        echo "expected $expected $opcode in $kernel of $ptx, found $seen" >&2
+        exit 1
+    fi
+}
+
 compile_target ptx tests/codegen_ptx_mma.cu sm70 KITTENS_SM70 compute_70 sm_70
 compile_target ptx tests/codegen_ptx_mma.cu sm75 KITTENS_SM75 compute_75 sm_75
+compile_target ldmatrix tests/codegen_ldmatrix.cu sm75 KITTENS_SM75 compute_75 sm_75
 compile_target mma tests/codegen_mma.cu sm70 KITTENS_SM70 compute_70 sm_70
 compile_target mma tests/codegen_mma.cu sm75 KITTENS_SM75 compute_75 sm_75
 compile_target gemm src/gemm.cu sm70 KITTENS_SM70 compute_70 sm_70
@@ -168,7 +189,12 @@ expect_backend_mismatch sm75 KITTENS_SM75 sm_75
 expect_layout_reject sm70 KITTENS_SM70 sm_70
 expect_layout_reject sm75 KITTENS_SM75 sm_75
 
-for prefix in mma gemm; do
+for prefix in ldmatrix mma gemm; do
+    if [[ "$prefix" == ldmatrix ]]; then
+        require_pattern "$build_dir/$prefix-sm75.ptx" '\.target[[:space:]]+sm_75' \
+            "sm_75 target"
+        continue
+    fi
     require_pattern "$build_dir/$prefix-sm70.ptx" '\.target[[:space:]]+sm_70' "sm_70 target"
     require_pattern "$build_dir/$prefix-sm75.ptx" '\.target[[:space:]]+sm_75' "sm_75 target"
 done
@@ -200,6 +226,8 @@ for ptx in "$build_dir/mma-sm70.ptx" "$build_dir/mma-sm75.ptx" \
     reject_pattern "$ptx" 'cp\.async|mbarrier|wgmma|tensormap|stmatrix' \
         "SM80+ instruction"
 done
+reject_pattern "$build_dir/ldmatrix-sm75.ptx" \
+    'cp\.async|mbarrier|wgmma|tensormap|stmatrix' "SM80+ instruction"
 
 for ptx in "$build_dir/mma-sm70.ptx" "$build_dir/gemm-sm70.ptx"; do
     reject_pattern "$ptx" 'ldmatrix|m16n8k8|m16n8k16' "SM75+ matrix instruction"
@@ -244,5 +272,15 @@ require_kernel_opcode "$build_dir/ptx-sm75.sass" codegen_ptx_m16n8k8 \
 require_kernel_opcode "$build_dir/ptx-sm75.sass" codegen_ptx_m16n8k8 "$any_hmma" 1
 require_kernel_opcode "$build_dir/ptx-sm75.sass" codegen_ptx_m16n8k8 "$any_ffma" 0
 reject_pattern "$build_dir/ptx-sm70.sass" 'HMMA[.]1688' "SM75+ Tensor Core SASS"
+
+for kernel in codegen_ldmatrix_x2 codegen_ldmatrix_x1; do
+    require_kernel_opcode "$build_dir/ldmatrix-sm75.sass" "$kernel" \
+        "$boundary_start"'LDSM[.]' 1
+    require_kernel_opcode "$build_dir/ldmatrix-sm75.sass" "$kernel" "$any_ffma" 0
+done
+require_ptx_kernel_opcode "$build_dir/ldmatrix-sm75.ptx" codegen_ldmatrix_x2 \
+    'ldmatrix[.]sync[.]aligned[.]m8n8[.]x2[.]shared[.]b16' 1
+require_ptx_kernel_opcode "$build_dir/ldmatrix-sm75.ptx" codegen_ldmatrix_x1 \
+    'ldmatrix[.]sync[.]aligned[.]m8n8[.]x1[.]shared[.]b16' 1
 
 echo "codegen gate: PASS"
