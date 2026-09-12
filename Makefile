@@ -49,10 +49,10 @@ test-sm75: build-sm75
 	if [[ $$status -eq 77 ]]; then echo "SKIP: GEMM SM75 runtime validation pending (binary exit 77)"; exit 0; fi; \
 	exit $$status
 
-$(BUILD_DIR)/mma-layout-sm70: tests/mma_layout.cu tests/test_utils.cuh include/tk_sm7x/arch.cuh include/tk_sm7x/ptx_mma.cuh | $(BUILD_DIR)
+$(BUILD_DIR)/mma-layout-sm70: tests/mma_layout.cu tests/mma_layout_oracle.cuh tests/test_utils.cuh include/tk_sm7x/arch.cuh include/tk_sm7x/ptx_mma.cuh | $(BUILD_DIR)
 	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM70_FLAGS) tests/mma_layout.cu -o $@
 
-$(BUILD_DIR)/mma-layout-sm75: tests/mma_layout.cu tests/test_utils.cuh include/tk_sm7x/arch.cuh include/tk_sm7x/ptx_mma.cuh | $(BUILD_DIR)
+$(BUILD_DIR)/mma-layout-sm75: tests/mma_layout.cu tests/mma_layout_oracle.cuh tests/test_utils.cuh include/tk_sm7x/arch.cuh include/tk_sm7x/ptx_mma.cuh | $(BUILD_DIR)
 	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) tests/mma_layout.cu -o $@
 
 build-layout-sm70: $(BUILD_DIR)/mma-layout-sm70
