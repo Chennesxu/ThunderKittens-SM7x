@@ -8,17 +8,25 @@
 #include <cstdlib>
 #include <vector>
 
+#if defined(KITTENS_SM75)
 #include "mma_layout_oracle.cuh"
+#endif
 #include "test_utils.cuh"
 #include "tk_sm7x/ptx_backend.cuh"
 
 namespace {
 
-using backend_sm75 =
+using backend_m8 =
+    tk_sm7x::detail::ptx_warp_mma_f16_f16_f32_16x16x16<tk_sm7x::arch::sm70>;
+#if defined(KITTENS_SM75)
+using backend_m16 =
     tk_sm7x::detail::ptx_warp_mma_f16_f16_f32_16x16x16<tk_sm7x::arch::sm75>;
+#endif
 using tk_sm7x::test::cuda_ok;
+#if defined(KITTENS_SM75)
 using tk_sm7x::test::kM16FragmentCell;
 using tk_sm7x::test::kM16OperandBCell;
+#endif
 
 constexpr int kRows = 16;
 constexpr int kCols = 16;
@@ -53,10 +61,12 @@ struct test_case {
     int fixture;
 };
 
+#if defined(KITTENS_SM75)
 uint32_t pack_bits(__half low, __half high) {
     return static_cast<uint32_t>(static_cast<__half_raw>(low).x) |
            (static_cast<uint32_t>(static_cast<__half_raw>(high).x) << 16);
 }
+#endif
 
 template <class Backend>
 __global__ void run_case_kernel(
@@ -176,6 +186,7 @@ void fill_matrix(std::vector<__half>& values, int warps, int fixture, int matrix
     }
 }
 
+#if defined(KITTENS_SM75)
 void pack_a_from_oracle(const std::vector<__half>& a, int warps,
                         std::vector<uint32_t>& packed) {
     for (int warp = 0; warp < warps; ++warp) {
@@ -223,6 +234,7 @@ void pack_b_from_oracle(const std::vector<__half>& b, int warps,
         }
     }
 }
+#endif
 
 void accumulate_reference(const std::vector<__half>& a, const std::vector<__half>& b,
                           int warps, float scale, std::vector<float>& reference) {
@@ -242,7 +254,7 @@ void accumulate_reference(const std::vector<__half>& a, const std::vector<__half
 }
 
 template <class Backend>
-bool run_case(const test_case& spec, int ordinal) {
+bool run_case(const test_case& spec, int ordinal, const char* backend_name) {
     const std::size_t input_cells =
         static_cast<std::size_t>(spec.warps) * kTileCells;
     const std::size_t output_cells =
@@ -262,8 +274,14 @@ bool run_case(const test_case& spec, int ordinal) {
     fill_matrix(b0, spec.warps, spec.fixture, 1);
     fill_matrix(a1, spec.warps, spec.fixture + 5, 2);
     fill_matrix(b1, spec.warps, spec.fixture + 5, 3);
-    pack_a_from_oracle(a0, spec.warps, packed_a);
-    pack_b_from_oracle(b0, spec.warps, packed_b);
+#if defined(KITTENS_SM75)
+    if (spec.stage == staging::packed_a) {
+        pack_a_from_oracle(a0, spec.warps, packed_a);
+    }
+    if (spec.stage == staging::packed_b) {
+        pack_b_from_oracle(b0, spec.warps, packed_b);
+    }
+#endif
     if (spec.op == operation::clear_reuse) {
         accumulate_reference(a1, b1, spec.warps, 1.0f, reference);
     } else {
@@ -336,17 +354,18 @@ bool run_case(const test_case& spec, int ordinal) {
                         const float expected = reference[reference_base + row * kCols + col];
                         if (!std::isfinite(observed) || observed != expected) {
                             std::fprintf(stderr,
-                                         "ptx sm75 %s mismatch warp=%d row=%d col=%d "
+                                         "%s %s mismatch warp=%d row=%d col=%d "
                                          "got=%g want=%g\n",
-                                         spec.name, warp, row, col, observed, expected);
+                                         backend_name, spec.name, warp, row, col,
+                                         observed, expected);
                             ok = false;
                             break;
                         }
                     } else if (!std::isnan(observed)) {
                         std::fprintf(stderr,
-                                     "ptx sm75 %s padding modified warp=%d row=%d col=%d "
+                                     "%s %s padding modified warp=%d row=%d col=%d "
                                      "got=%g\n",
-                                     spec.name, warp, row, col, observed);
+                                     backend_name, spec.name, warp, row, col, observed);
                         ok = false;
                         break;
                     }
@@ -363,7 +382,7 @@ bool run_case(const test_case& spec, int ordinal) {
     released = cuda_ok(cudaFree(device_packed_b), "cudaFree(packed B)") && released;
     released = cuda_ok(cudaFree(device_output), "cudaFree(output)") && released;
     if (ok && released) {
-        std::printf("ptx sm75 %s: PASS ordinal=%d\n", spec.name, ordinal);
+        std::printf("%s %s: PASS ordinal=%d\n", backend_name, spec.name, ordinal);
     }
     return ok && released;
 }
@@ -377,7 +396,7 @@ int main() {
         return selection;
     }
 
-    const test_case cases[] = {
+    const test_case common_cases[] = {
         {"identity", 1, 16, 16, operation::once, staging::backend, 0},
         {"fingerprint", 1, 16, 16, operation::once, staging::backend, 1},
         {"repeat-same", 1, 16, 16, operation::repeat_same, staging::backend, 2},
@@ -385,14 +404,28 @@ int main() {
         {"clear-reuse", 1, 16, 16, operation::clear_reuse, staging::backend, 4},
         {"padded-ld", 1, 24, 20, operation::once, staging::backend, 5},
         {"multiwarp", 4, 16, 16, operation::once, staging::backend, 6},
-        {"scalar-a-hardware-b", 1, 24, 20, operation::once, staging::packed_a, 7},
-        {"hardware-a-scalar-b", 4, 24, 20, operation::once, staging::packed_b, 8},
     };
-    for (const test_case& spec : cases) {
-        if (!run_case<backend_sm75>(spec, ordinal)) {
+    for (const test_case& spec : common_cases) {
+        if (!run_case<backend_m8>(spec, ordinal, "ptx m8")) {
             return EXIT_FAILURE;
         }
     }
-    std::printf("ptx sm75 logical backend: PASS ordinal=%d\n", ordinal);
+#if defined(KITTENS_SM75)
+    for (const test_case& spec : common_cases) {
+        if (!run_case<backend_m16>(spec, ordinal, "ptx m16")) {
+            return EXIT_FAILURE;
+        }
+    }
+    const test_case mixed_cases[] = {
+        {"scalar-a-hardware-b", 1, 24, 20, operation::once, staging::packed_a, 7},
+        {"hardware-a-scalar-b", 4, 24, 20, operation::once, staging::packed_b, 8},
+    };
+    for (const test_case& spec : mixed_cases) {
+        if (!run_case<backend_m16>(spec, ordinal, "ptx m16")) {
+            return EXIT_FAILURE;
+        }
+    }
+#endif
+    std::printf("ptx logical backends: PASS ordinal=%d\n", ordinal);
     return EXIT_SUCCESS;
 }

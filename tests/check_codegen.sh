@@ -156,6 +156,10 @@ boundary_start='(^|[^A-Za-z0-9_.])'
 boundary_end='([^A-Za-z0-9_.]|$)'
 any_hmma="$boundary_start""HMMA[.]"
 any_ffma="$boundary_start""FFMA""$boundary_end"
+ptx_m8="$boundary_start"'mma[.]sync[.]aligned[.]m8n8k4[.]row[.]col[.]f32[.]f16[.]f16[.]f32'"$boundary_end"
+ptx_m16="$boundary_start"'mma[.]sync[.]aligned[.]m16n8k8[.]row[.]col[.]f32[.]f16[.]f16[.]f32'"$boundary_end"
+ptx_x2="$boundary_start"'ldmatrix[.]sync[.]aligned[.]m8n8[.]x2[.]shared[.]b16'"$boundary_end"
+ptx_x1="$boundary_start"'ldmatrix[.]sync[.]aligned[.]m8n8[.]x1[.]shared[.]b16'"$boundary_end"
 
 require_kernel_opcode() {
     local sass=$1
@@ -206,6 +210,25 @@ require_ptx_kernel_opcode() {
         exit 1
     fi
 }
+
+exercise_ptx_parser_boundaries() {
+    local probe="$build_dir/ptx-parser-boundary.probe"
+    printf '%s\n' \
+        '.visible .entry codegen_ptx_parser_boundary()' \
+        '{' \
+        'xmma.sync.aligned.m8n8k4.row.col.f32.f16.f16.f32;' \
+        'mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32x;' \
+        'xldmatrix.sync.aligned.m8n8.x2.shared.b16;' \
+        'ldmatrix.sync.aligned.m8n8.x1.shared.b16x;' \
+        '}' >"$probe"
+    require_ptx_kernel_opcode "$probe" codegen_ptx_parser_boundary "$ptx_m8" 0
+    require_ptx_kernel_opcode "$probe" codegen_ptx_parser_boundary "$ptx_m16" 0
+    require_ptx_kernel_opcode "$probe" codegen_ptx_parser_boundary "$ptx_x2" 0
+    require_ptx_kernel_opcode "$probe" codegen_ptx_parser_boundary "$ptx_x1" 0
+    rm -f -- "$probe"
+}
+
+exercise_ptx_parser_boundaries
 
 compile_target ptx tests/codegen_ptx_mma.cu sm70 KITTENS_SM70 compute_70 sm_70
 compile_target ptx tests/codegen_ptx_mma.cu sm75 KITTENS_SM75 compute_75 sm_75
@@ -284,17 +307,15 @@ require_tensor_core_per_kernel "$build_dir/gemm-sm75.sass" 2
 # The inline-PTX wrappers must keep emitting their intended instruction shape and
 # must not decay into a scalar path.
 for ptx in "$build_dir/ptx-sm70.ptx" "$build_dir/ptx-sm75.ptx"; do
-    require_pattern "$ptx" 'mma\.sync\.aligned\.m8n8k4\.row\.col\.f32\.f16\.f16\.f32' \
+    require_pattern "$ptx" "$ptx_m8" \
         "m8n8k4 instruction"
 done
 require_pattern "$build_dir/ptx-sm75.ptx" \
-    'mma\.sync\.aligned\.m16n8k8\.row\.col\.f32\.f16\.f16\.f32' "m16n8k8 instruction"
+    "$ptx_m16" "m16n8k8 instruction"
 reject_pattern "$build_dir/ptx-sm70.ptx" 'ldmatrix|m16n8k8|m16n8k16' \
     "SM75+ matrix instruction"
 reject_pattern "$build_dir/ptx-backend-sm70.ptx" 'ldmatrix|m16n8k8|m16n8k16' \
     "SM75+ matrix instruction"
-reject_pattern "$build_dir/ptx-backend-sm70.sass" 'HMMA|LDSM|FFMA' \
-    "matrix or scalar floating-point instruction"
 for sass in "$build_dir/ptx-sm70.sass" "$build_dir/ptx-sm75.sass"; do
     require_pattern "$sass" 'HMMA' "Tensor Core SASS"
     reject_pattern "$sass" 'FFMA' "scalar FFMA fallback"
@@ -314,6 +335,8 @@ require_kernel_opcode "$build_dir/ptx-sm75.sass" codegen_ptx_m16n8k8 \
 require_kernel_opcode "$build_dir/ptx-sm75.sass" codegen_ptx_m16n8k8 "$any_hmma" 1
 require_kernel_opcode "$build_dir/ptx-sm75.sass" codegen_ptx_m16n8k8 "$any_ffma" 0
 reject_pattern "$build_dir/ptx-sm70.sass" 'HMMA[.]1688' "SM75+ Tensor Core SASS"
+reject_pattern "$build_dir/ptx-backend-sm70.sass" 'HMMA[.]1688|LDSM' \
+    "SM75+ matrix SASS"
 
 for kernel in codegen_ldmatrix_x2 codegen_ldmatrix_x1; do
     require_kernel_opcode "$build_dir/ldmatrix-sm75.sass" "$kernel" \
@@ -321,19 +344,41 @@ for kernel in codegen_ldmatrix_x2 codegen_ldmatrix_x1; do
     require_kernel_opcode "$build_dir/ldmatrix-sm75.sass" "$kernel" "$any_ffma" 0
 done
 require_ptx_kernel_opcode "$build_dir/ldmatrix-sm75.ptx" codegen_ldmatrix_x2 \
-    'ldmatrix[.]sync[.]aligned[.]m8n8[.]x2[.]shared[.]b16' 1
+    "$ptx_x2" 1
 require_ptx_kernel_opcode "$build_dir/ldmatrix-sm75.ptx" codegen_ldmatrix_x1 \
-    'ldmatrix[.]sync[.]aligned[.]m8n8[.]x1[.]shared[.]b16' 1
+    "$ptx_x1" 1
+
+for label in sm70 sm75; do
+    require_ptx_kernel_opcode "$build_dir/ptx-backend-$label.ptx" \
+        codegen_ptx_backend_sm70 "$ptx_m8" 4
+    require_ptx_kernel_opcode "$build_dir/ptx-backend-$label.ptx" \
+        codegen_ptx_backend_sm70 "$ptx_m16" 0
+    require_ptx_kernel_opcode "$build_dir/ptx-backend-$label.ptx" \
+        codegen_ptx_backend_sm70 "$ptx_x2" 0
+    require_ptx_kernel_opcode "$build_dir/ptx-backend-$label.ptx" \
+        codegen_ptx_backend_sm70 "$ptx_x1" 0
+    for step in STEP0 STEP1 STEP2 STEP3; do
+        require_kernel_opcode "$build_dir/ptx-backend-$label.sass" \
+            codegen_ptx_backend_sm70 \
+            "$boundary_start"'HMMA[.]884[.]F32[.]F32[.]'"$step""$boundary_end" 4
+    done
+    require_kernel_opcode "$build_dir/ptx-backend-$label.sass" \
+        codegen_ptx_backend_sm70 "$any_hmma" 16
+    require_kernel_opcode "$build_dir/ptx-backend-$label.sass" \
+        codegen_ptx_backend_sm70 "$any_ffma" 0
+    require_kernel_opcode "$build_dir/ptx-backend-$label.sass" \
+        codegen_ptx_backend_sm70 "$boundary_start"'LDSM[.]' 0
+done
 
 require_ptx_kernel_opcode "$build_dir/ptx-backend-sm75.ptx" \
     codegen_ptx_backend_sm75 \
-    'mma[.]sync[.]aligned[.]m16n8k8[.]row[.]col[.]f32[.]f16[.]f16[.]f32' 4
+    "$ptx_m16" 4
 require_ptx_kernel_opcode "$build_dir/ptx-backend-sm75.ptx" \
     codegen_ptx_backend_sm75 \
-    'ldmatrix[.]sync[.]aligned[.]m8n8[.]x2[.]shared[.]b16' 2
+    "$ptx_x2" 2
 require_ptx_kernel_opcode "$build_dir/ptx-backend-sm75.ptx" \
     codegen_ptx_backend_sm75 \
-    'ldmatrix[.]sync[.]aligned[.]m8n8[.]x1[.]shared[.]b16' 4
+    "$ptx_x1" 4
 require_ptx_kernel_opcode "$build_dir/ptx-backend-sm75.ptx" \
     codegen_ptx_backend_sm75 'ldmatrix[.].*[.]trans' 0
 require_kernel_opcode "$build_dir/ptx-backend-sm75.sass" \

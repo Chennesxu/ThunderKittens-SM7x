@@ -8,9 +8,32 @@ if [[ "$build_dir" != "$root_dir/build" ]]; then
     exit 2
 fi
 
-gemm_test="$build_dir/gemm-sm75"
-if [[ ! -x "$gemm_test" ]]; then
-    echo "sanitizer input is missing; run make build-sm75" >&2
+selector=${1:-}
+if [[ $# -gt 1 ]]; then
+    echo "unknown sanitizer selector: $*" >&2
+    exit 2
+fi
+case "$selector" in
+    "")
+        sanitizer_test="$build_dir/gemm-sm75"
+        build_hint=build-sm75
+        memcheck_api=(--report-api-errors no)
+        pass_message="SM75 sanitizers: PASS"
+        ;;
+    ptx-mma)
+        sanitizer_test="$build_dir/ptx-mma-correctness-sm75"
+        build_hint=build-ptx-mma-sm75
+        memcheck_api=()
+        pass_message="PTX MMA SM75 sanitizers: PASS"
+        ;;
+    *)
+        echo "unknown sanitizer selector: $selector" >&2
+        exit 2
+        ;;
+esac
+
+if [[ ! -x "$sanitizer_test" ]]; then
+    echo "sanitizer input is missing; run make $build_hint" >&2
     exit 1
 fi
 if ! command -v compute-sanitizer >/dev/null 2>&1; then
@@ -19,7 +42,7 @@ if ! command -v compute-sanitizer >/dev/null 2>&1; then
 fi
 
 set +e
-"$gemm_test"
+"$sanitizer_test"
 preflight_status=$?
 set -e
 if [[ $preflight_status -eq 77 ]]; then
@@ -35,6 +58,7 @@ else
     echo "Compute Sanitizer preserving unrestricted CUDA visibility"
 fi
 
-compute-sanitizer --tool memcheck --report-api-errors no --error-exitcode 99 "$gemm_test"
-compute-sanitizer --tool racecheck --error-exitcode 99 "$gemm_test"
-echo "SM75 sanitizers: PASS"
+compute-sanitizer --tool memcheck "${memcheck_api[@]}" --error-exitcode 99 \
+    "$sanitizer_test"
+compute-sanitizer --tool racecheck --error-exitcode 99 "$sanitizer_test"
+echo "$pass_message"
