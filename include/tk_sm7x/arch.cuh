@@ -16,6 +16,8 @@ struct traits<sm70> {
     static constexpr int native_m = 8;
     static constexpr int native_n = 8;
     static constexpr int native_k = 4;
+    static constexpr bool has_mma_m8n8k4 = true;
+    static constexpr bool has_mma_m16n8k8 = false;
     static constexpr bool has_ldmatrix = false;
 };
 
@@ -27,6 +29,8 @@ struct traits<sm75> {
     static constexpr int native_m = 16;
     static constexpr int native_n = 8;
     static constexpr int native_k = 8;
+    static constexpr bool has_mma_m8n8k4 = true;
+    static constexpr bool has_mma_m16n8k8 = true;
     static constexpr bool has_ldmatrix = true;
 };
 
