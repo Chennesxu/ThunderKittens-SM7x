@@ -6,9 +6,9 @@ COMMON_FLAGS := -std=c++17 -O2 -lineinfo -I$(ROOT_DIR)/include -Xcompiler=-Wall,
 SM70_FLAGS := -DKITTENS_SM70 -gencode arch=compute_70,code=sm_70
 SM75_FLAGS := -DKITTENS_SM75 -gencode arch=compute_75,code=sm_75
 
-.PHONY: all check-arch check-codegen build-mma-sm70 build-mma-sm75 test-mma-sm75 build-sm70 build-sm75 test-sm75 sanitize-sm75 build-bench-sm75 bench-sm75 build-layout-sm70 build-layout-sm75 test-layout-sm75 build-ldmatrix-sm75 test-ldmatrix-sm75 clean
+.PHONY: all check-arch check-codegen build-mma-sm70 build-mma-sm75 test-mma-sm75 build-sm70 build-sm75 test-sm75 sanitize-sm75 build-bench-sm75 bench-sm75 build-layout-sm70 build-layout-sm75 test-layout-sm75 build-ldmatrix-sm75 test-ldmatrix-sm75 build-ptx-mma-sm75 test-ptx-mma-sm75 clean
 
-all: check-arch check-codegen build-mma-sm70 build-mma-sm75 build-layout-sm70 build-layout-sm75 build-ldmatrix-sm75 build-sm70 build-sm75
+all: check-arch check-codegen build-mma-sm70 build-mma-sm75 build-layout-sm70 build-layout-sm75 build-ldmatrix-sm75 build-ptx-mma-sm75 build-sm70 build-sm75
 
 $(BUILD_DIR):
 	mkdir -p "$(BUILD_DIR)"
@@ -75,6 +75,20 @@ build-ldmatrix-sm75: $(BUILD_DIR)/ldmatrix-layout-sm75
 test-ldmatrix-sm75: build-ldmatrix-sm75
 	@status=0; "$(BUILD_DIR)/ldmatrix-layout-sm75" || status=$$?; \
 	if [[ $$status -eq 77 ]]; then echo "SKIP: ldmatrix SM75 runtime validation pending (binary exit 77)"; exit 0; fi; \
+	exit $$status
+
+$(BUILD_DIR)/ptx-mma-correctness-sm75: tests/ptx_mma_correctness.cu \
+		tests/mma_layout_oracle.cuh tests/test_utils.cuh \
+		include/tk_sm7x/arch.cuh include/tk_sm7x/ptx_mma.cuh \
+		include/tk_sm7x/ptx_ldmatrix.cuh include/tk_sm7x/ptx_backend.cuh | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) \
+		tests/ptx_mma_correctness.cu -o $@
+
+build-ptx-mma-sm75: $(BUILD_DIR)/ptx-mma-correctness-sm75
+
+test-ptx-mma-sm75: build-ptx-mma-sm75
+	@status=0; "$(BUILD_DIR)/ptx-mma-correctness-sm75" || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: PTX MMA SM75 runtime validation pending (binary exit 77)"; exit 0; fi; \
 	exit $$status
 
 $(BUILD_DIR)/gemm-throughput-sm75: bench/gemm_throughput.cu tests/test_utils.cuh src/gemm.cu include/tk_sm7x/arch.cuh include/tk_sm7x/mma.cuh include/tk_sm7x/tile.cuh include/tk_sm7x/gemm.cuh | $(BUILD_DIR)

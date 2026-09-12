@@ -74,6 +74,28 @@ expect_layout_reject() {
     fi
 }
 
+expect_ptx_backend_capability() {
+    local positive_log="$build_dir/ptx-backend-capability-sm75.log"
+    local negative_log="$build_dir/ptx-backend-capability-sm70.log"
+    rm -f -- "$build_dir/ptx-backend-capability-sm75.o" \
+        "$build_dir/ptx-backend-capability-sm70.o" "$positive_log" "$negative_log"
+    "$nvcc_bin" -std=c++17 -I"$root_dir/include" -DKITTENS_SM75 -arch=sm_75 \
+        -c "$root_dir/tests/ptx_backend_capability_reject.cu" \
+        -o "$build_dir/ptx-backend-capability-sm75.o" >"$positive_log" 2>&1
+    set +e
+    "$nvcc_bin" -std=c++17 -I"$root_dir/include" -DKITTENS_SM70 -arch=sm_70 \
+        -c "$root_dir/tests/ptx_backend_capability_reject.cu" \
+        -o "$build_dir/ptx-backend-capability-sm70.o" >"$negative_log" 2>&1
+    local status=$?
+    set -e
+    if [[ $status -eq 0 ]] || ! grep -Fq \
+        "PTX MMA backend is not supported by the active target" "$negative_log"; then
+        echo "PTX backend capability gate failed" >&2
+        sed -n '1,120p' "$negative_log" >&2
+        exit 1
+    fi
+}
+
 require_pattern() {
     local file=$1
     local pattern=$2
@@ -168,8 +190,16 @@ require_ptx_kernel_opcode() {
             found = 1
             active = 1
         }
-        active && $0 ~ opcode { count++ }
-        active && $0 ~ /^[[:space:]]*[}]/ { active = 0 }
+        active {
+            if ($0 ~ opcode) count++
+            opened = $0
+            closed = $0
+            open_count = gsub(/{/, "", opened)
+            close_count = gsub(/}/, "", closed)
+            depth += open_count - close_count
+            if (open_count > 0) started = 1
+            if (started && depth == 0) active = 0
+        }
         END { if (!found) { print "absent"; exit } print count + 0 }' "$ptx")
     if [[ "$seen" != "$expected" ]]; then
         echo "expected $expected $opcode in $kernel of $ptx, found $seen" >&2
@@ -180,6 +210,8 @@ require_ptx_kernel_opcode() {
 compile_target ptx tests/codegen_ptx_mma.cu sm70 KITTENS_SM70 compute_70 sm_70
 compile_target ptx tests/codegen_ptx_mma.cu sm75 KITTENS_SM75 compute_75 sm_75
 compile_target ldmatrix tests/codegen_ldmatrix.cu sm75 KITTENS_SM75 compute_75 sm_75
+compile_target ptx-backend tests/codegen_ptx_backend.cu sm70 KITTENS_SM70 compute_70 sm_70
+compile_target ptx-backend tests/codegen_ptx_backend.cu sm75 KITTENS_SM75 compute_75 sm_75
 compile_target mma tests/codegen_mma.cu sm70 KITTENS_SM70 compute_70 sm_70
 compile_target mma tests/codegen_mma.cu sm75 KITTENS_SM75 compute_75 sm_75
 compile_target gemm src/gemm.cu sm70 KITTENS_SM70 compute_70 sm_70
@@ -188,8 +220,9 @@ expect_backend_mismatch sm70 KITTENS_SM70 sm_70
 expect_backend_mismatch sm75 KITTENS_SM75 sm_75
 expect_layout_reject sm70 KITTENS_SM70 sm_70
 expect_layout_reject sm75 KITTENS_SM75 sm_75
+expect_ptx_backend_capability
 
-for prefix in ldmatrix mma gemm; do
+for prefix in ldmatrix ptx-backend mma gemm; do
     if [[ "$prefix" == ldmatrix ]]; then
         require_pattern "$build_dir/$prefix-sm75.ptx" '\.target[[:space:]]+sm_75' \
             "sm_75 target"
@@ -228,6 +261,11 @@ for ptx in "$build_dir/mma-sm70.ptx" "$build_dir/mma-sm75.ptx" \
 done
 reject_pattern "$build_dir/ldmatrix-sm75.ptx" \
     'cp\.async|mbarrier|wgmma|tensormap|stmatrix' "SM80+ instruction"
+for ptx in "$build_dir/ptx-backend-sm70.ptx" \
+           "$build_dir/ptx-backend-sm75.ptx"; do
+    reject_pattern "$ptx" 'cp\.async|mbarrier|wgmma|tensormap|stmatrix' \
+        "SM80+ instruction"
+done
 
 for ptx in "$build_dir/mma-sm70.ptx" "$build_dir/gemm-sm70.ptx"; do
     reject_pattern "$ptx" 'ldmatrix|m16n8k8|m16n8k16' "SM75+ matrix instruction"
@@ -253,6 +291,10 @@ require_pattern "$build_dir/ptx-sm75.ptx" \
     'mma\.sync\.aligned\.m16n8k8\.row\.col\.f32\.f16\.f16\.f32' "m16n8k8 instruction"
 reject_pattern "$build_dir/ptx-sm70.ptx" 'ldmatrix|m16n8k8|m16n8k16' \
     "SM75+ matrix instruction"
+reject_pattern "$build_dir/ptx-backend-sm70.ptx" 'ldmatrix|m16n8k8|m16n8k16' \
+    "SM75+ matrix instruction"
+reject_pattern "$build_dir/ptx-backend-sm70.sass" 'HMMA|LDSM|FFMA' \
+    "matrix or scalar floating-point instruction"
 for sass in "$build_dir/ptx-sm70.sass" "$build_dir/ptx-sm75.sass"; do
     require_pattern "$sass" 'HMMA' "Tensor Core SASS"
     reject_pattern "$sass" 'FFMA' "scalar FFMA fallback"
@@ -282,5 +324,26 @@ require_ptx_kernel_opcode "$build_dir/ldmatrix-sm75.ptx" codegen_ldmatrix_x2 \
     'ldmatrix[.]sync[.]aligned[.]m8n8[.]x2[.]shared[.]b16' 1
 require_ptx_kernel_opcode "$build_dir/ldmatrix-sm75.ptx" codegen_ldmatrix_x1 \
     'ldmatrix[.]sync[.]aligned[.]m8n8[.]x1[.]shared[.]b16' 1
+
+require_ptx_kernel_opcode "$build_dir/ptx-backend-sm75.ptx" \
+    codegen_ptx_backend_sm75 \
+    'mma[.]sync[.]aligned[.]m16n8k8[.]row[.]col[.]f32[.]f16[.]f16[.]f32' 4
+require_ptx_kernel_opcode "$build_dir/ptx-backend-sm75.ptx" \
+    codegen_ptx_backend_sm75 \
+    'ldmatrix[.]sync[.]aligned[.]m8n8[.]x2[.]shared[.]b16' 2
+require_ptx_kernel_opcode "$build_dir/ptx-backend-sm75.ptx" \
+    codegen_ptx_backend_sm75 \
+    'ldmatrix[.]sync[.]aligned[.]m8n8[.]x1[.]shared[.]b16' 4
+require_ptx_kernel_opcode "$build_dir/ptx-backend-sm75.ptx" \
+    codegen_ptx_backend_sm75 'ldmatrix[.].*[.]trans' 0
+require_kernel_opcode "$build_dir/ptx-backend-sm75.sass" \
+    codegen_ptx_backend_sm75 \
+    "$boundary_start"'HMMA[.]1688[.]F32'"$boundary_end" 4
+require_kernel_opcode "$build_dir/ptx-backend-sm75.sass" \
+    codegen_ptx_backend_sm75 "$any_hmma" 4
+require_kernel_opcode "$build_dir/ptx-backend-sm75.sass" \
+    codegen_ptx_backend_sm75 "$any_ffma" 0
+require_kernel_opcode "$build_dir/ptx-backend-sm75.sass" \
+    codegen_ptx_backend_sm75 "$boundary_start"'LDSM[.]' 6
 
 echo "codegen gate: PASS"
