@@ -130,6 +130,35 @@ require_tensor_core_per_kernel() {
     done <<<"$report"
 }
 
+boundary_start='(^|[^A-Za-z0-9_.])'
+boundary_end='([^A-Za-z0-9_.]|$)'
+any_hmma="$boundary_start""HMMA[.]"
+any_ffma="$boundary_start""FFMA""$boundary_end"
+
+require_kernel_opcode() {
+    local sass=$1
+    local kernel=$2
+    local opcode=$3
+    local expected=$4
+    local seen
+    seen=$(awk -v RS='Function : ' -v kernel="$kernel" -v opcode="$opcode" '
+        NR > 1 {
+            n = split($0, line, "\n")
+            if (line[1] != kernel) next
+            found = 1
+            for (i = 2; i <= n; i++) {
+                if (line[i] ~ opcode) count++
+            }
+        }
+        END { if (!found) { print "absent"; exit } print count + 0 }' "$sass")
+    if [[ "$seen" != "$expected" ]]; then
+        echo "expected $expected $opcode in $kernel of $sass, found $seen" >&2
+        exit 1
+    fi
+}
+
+compile_target ptx tests/codegen_ptx_mma.cu sm70 KITTENS_SM70 compute_70 sm_70
+compile_target ptx tests/codegen_ptx_mma.cu sm75 KITTENS_SM75 compute_75 sm_75
 compile_target mma tests/codegen_mma.cu sm70 KITTENS_SM70 compute_70 sm_70
 compile_target mma tests/codegen_mma.cu sm75 KITTENS_SM75 compute_75 sm_75
 compile_target gemm src/gemm.cu sm70 KITTENS_SM70 compute_70 sm_70
@@ -185,5 +214,35 @@ done
 # still emits HMMA, so every GEMM kernel instantiation is inspected on its own.
 require_tensor_core_per_kernel "$build_dir/gemm-sm70.sass" 2
 require_tensor_core_per_kernel "$build_dir/gemm-sm75.sass" 2
+
+# The inline-PTX wrappers must keep emitting their intended instruction shape and
+# must not decay into a scalar path.
+for ptx in "$build_dir/ptx-sm70.ptx" "$build_dir/ptx-sm75.ptx"; do
+    require_pattern "$ptx" 'mma\.sync\.aligned\.m8n8k4\.row\.col\.f32\.f16\.f16\.f32' \
+        "m8n8k4 instruction"
+done
+require_pattern "$build_dir/ptx-sm75.ptx" \
+    'mma\.sync\.aligned\.m16n8k8\.row\.col\.f32\.f16\.f16\.f32' "m16n8k8 instruction"
+reject_pattern "$build_dir/ptx-sm70.ptx" 'ldmatrix|m16n8k8|m16n8k16' \
+    "SM75+ matrix instruction"
+for sass in "$build_dir/ptx-sm70.sass" "$build_dir/ptx-sm75.sass"; do
+    require_pattern "$sass" 'HMMA' "Tensor Core SASS"
+    reject_pattern "$sass" 'FFMA' "scalar FFMA fallback"
+
+    # A file-wide HMMA lets one wrapper hide behind another, so each wrapper is
+    # pinned to the exact machine instructions its shape must lower to, and to
+    # how many Tensor Core instructions it may issue in total.
+    for step in STEP0 STEP1 STEP2 STEP3; do
+        require_kernel_opcode "$sass" codegen_ptx_m8n8k4 \
+            "$boundary_start""HMMA[.]884[.]F32[.]F32[.]$step""$boundary_end" 1
+    done
+    require_kernel_opcode "$sass" codegen_ptx_m8n8k4 "$any_hmma" 4
+    require_kernel_opcode "$sass" codegen_ptx_m8n8k4 "$any_ffma" 0
+done
+require_kernel_opcode "$build_dir/ptx-sm75.sass" codegen_ptx_m16n8k8 \
+    "$boundary_start""HMMA[.]1688[.]F32""$boundary_end" 1
+require_kernel_opcode "$build_dir/ptx-sm75.sass" codegen_ptx_m16n8k8 "$any_hmma" 1
+require_kernel_opcode "$build_dir/ptx-sm75.sass" codegen_ptx_m16n8k8 "$any_ffma" 0
+reject_pattern "$build_dir/ptx-sm70.sass" 'HMMA[.]1688' "SM75+ Tensor Core SASS"
 
 echo "codegen gate: PASS"
