@@ -24,10 +24,17 @@ compile_target() {
     local macro=$4
     local compute=$5
     local sm=$6
+    local definition=${7:-}
+    local extra_flags=()
+    if [[ -n "$definition" ]]; then
+        extra_flags+=("-D$definition")
+    fi
     "$nvcc_bin" -std=c++17 -O3 -I"$root_dir/include" "-D$macro" \
+        "${extra_flags[@]}" \
         --ptx "-arch=$compute" "$root_dir/$source" \
         -o "$build_dir/$prefix-$label.ptx"
     "$nvcc_bin" -std=c++17 -O3 -I"$root_dir/include" "-D$macro" \
+        "${extra_flags[@]}" \
         --cubin "-arch=$sm" "$root_dir/$source" \
         -o "$build_dir/$prefix-$label.cubin"
     "$cuobjdump_bin" --dump-sass "$build_dir/$prefix-$label.cubin" \
@@ -190,7 +197,7 @@ require_ptx_kernel_opcode() {
     local expected=$4
     local seen
     seen=$(awk -v kernel="$kernel" -v opcode="$opcode" '
-        $0 ~ "^[[:space:]]*[.]visible[[:space:]]+[.]entry[[:space:]]+" kernel "[(]" {
+        $0 ~ "^[[:space:]]*([.]visible[[:space:]]+)?[.]entry[[:space:]]+" kernel "[(]" {
             found = 1
             active = 1
         }
@@ -207,6 +214,72 @@ require_ptx_kernel_opcode() {
         END { if (!found) { print "absent"; exit } print count + 0 }' "$ptx")
     if [[ "$seen" != "$expected" ]]; then
         echo "expected $expected $opcode in $kernel of $ptx, found $seen" >&2
+        exit 1
+    fi
+}
+
+gemm_kernel_name() {
+    local ptx=$1
+    local signature=$2
+    local names
+    names=$(awk -v signature="$signature" '
+        ($0 ~ "^[[:space:]]*([.]visible[[:space:]]+)?[.]entry[[:space:]]+" ||
+                $0 ~ "^[[:space:]]*Function[[:space:]]*:[[:space:]]+") &&
+                index($0, signature) {
+            name = $0
+            sub(/^.*[.]entry[[:space:]]+/, "", name)
+            sub(/^.*Function[[:space:]]*:[[:space:]]+/, "", name)
+            sub(/[(].*$/, "", name)
+            print name
+        }' "$ptx")
+    local seen
+    seen=$(printf '%s\n' "$names" | grep -c . || true)
+    if [[ "$seen" -ne 1 ]]; then
+        echo "expected one GEMM kernel matching $signature in $ptx, found $seen" >&2
+        printf '%s\n' "$names" >&2
+        exit 1
+    fi
+    printf '%s\n' "$names"
+}
+
+exercise_gemm_kernel_name_boundaries() {
+    local ptx_probe="$build_dir/gemm-kernel-name.ptx.probe"
+    local sass_probe="$build_dir/gemm-kernel-name.sass.probe"
+    printf '%s\n' \
+        '.entry _ZN7tk_sm7x63_GLOBAL__N__39_tmpxft_0000000c_gemm_kernelILi64ELi64ELi2ELi2EEE(' \
+        '.entry _ZN7tk_sm7x63_GLOBAL__N__39_tmpxft_0000000c_gemm_kernelILi128ELi128ELi4ELi2EEE(' \
+        >"$ptx_probe"
+    printf '%s\n' \
+        'Function : _ZN7tk_sm7x63_GLOBAL__N__39_tmpxft_00000014_gemm_kernelILi128ELi128ELi4ELi2EEE' \
+        'Function : _ZN7tk_sm7x63_GLOBAL__N__39_tmpxft_00000014_gemm_kernelILi64ELi64ELi2ELi2EEE' \
+        >"$sass_probe"
+    local ptx_small
+    local sass_small
+    ptx_small=$(gemm_kernel_name "$ptx_probe" \
+        'gemm_kernelILi64ELi64ELi2ELi2EEE')
+    sass_small=$(gemm_kernel_name "$sass_probe" \
+        'gemm_kernelILi64ELi64ELi2ELi2EEE')
+    if [[ "$ptx_small" == "$sass_small" ]]; then
+        echo "GEMM kernel name resolver coupled independent artifacts" >&2
+        exit 1
+    fi
+    gemm_kernel_name "$ptx_probe" \
+        'gemm_kernelILi128ELi128ELi4ELi2EEE' >/dev/null
+    gemm_kernel_name "$sass_probe" \
+        'gemm_kernelILi128ELi128ELi4ELi2EEE' >/dev/null
+    rm -f -- "$ptx_probe" "$sass_probe"
+}
+
+require_ptx_gemm_kernel_population() {
+    local ptx=$1
+    local expected=$2
+    local seen
+    seen=$(awk '
+        $0 ~ /^[[:space:]]*([.]visible[[:space:]]+)?[.]entry[[:space:]]+/ &&
+                /gemm_kernel/ { count++ }
+        END { print count + 0 }' "$ptx")
+    if [[ "$seen" -ne "$expected" ]]; then
+        echo "expected $expected GEMM kernels in $ptx, found $seen" >&2
         exit 1
     fi
 }
@@ -229,6 +302,7 @@ exercise_ptx_parser_boundaries() {
 }
 
 exercise_ptx_parser_boundaries
+exercise_gemm_kernel_name_boundaries
 
 compile_target ptx tests/codegen_ptx_mma.cu sm70 KITTENS_SM70 compute_70 sm_70
 compile_target ptx tests/codegen_ptx_mma.cu sm75 KITTENS_SM75 compute_75 sm_75
@@ -239,13 +313,15 @@ compile_target mma tests/codegen_mma.cu sm70 KITTENS_SM70 compute_70 sm_70
 compile_target mma tests/codegen_mma.cu sm75 KITTENS_SM75 compute_75 sm_75
 compile_target gemm src/gemm.cu sm70 KITTENS_SM70 compute_70 sm_70
 compile_target gemm src/gemm.cu sm75 KITTENS_SM75 compute_75 sm_75
+compile_target gemm-ptx src/gemm.cu sm70 KITTENS_SM70 compute_70 sm_70 KITTENS_MMA_PTX
+compile_target gemm-ptx src/gemm.cu sm75 KITTENS_SM75 compute_75 sm_75 KITTENS_MMA_PTX
 expect_backend_mismatch sm70 KITTENS_SM70 sm_70
 expect_backend_mismatch sm75 KITTENS_SM75 sm_75
 expect_layout_reject sm70 KITTENS_SM70 sm_70
 expect_layout_reject sm75 KITTENS_SM75 sm_75
 expect_ptx_backend_capability
 
-for prefix in ldmatrix ptx-backend mma gemm; do
+for prefix in ldmatrix ptx-backend mma gemm gemm-ptx; do
     if [[ "$prefix" == ldmatrix ]]; then
         require_pattern "$build_dir/$prefix-sm75.ptx" '\.target[[:space:]]+sm_75' \
             "sm_75 target"
@@ -281,6 +357,77 @@ for ptx in "$build_dir/mma-sm70.ptx" "$build_dir/mma-sm75.ptx" \
     require_pattern "$ptx" "$store" "WMMA FP32 store"
     reject_pattern "$ptx" 'cp\.async|mbarrier|wgmma|tensormap|stmatrix' \
         "SM80+ instruction"
+done
+
+for ptx in "$build_dir/gemm-ptx-sm70.ptx" "$build_dir/gemm-ptx-sm75.ptx"; do
+    reject_pattern "$ptx" 'wmma[.]' "WMMA instruction in PTX GEMM"
+    reject_pattern "$ptx" 'cp[.]async|mbarrier|wgmma|tensormap|stmatrix|m16n8k16' \
+        "SM80+ instruction"
+    require_ptx_gemm_kernel_population "$ptx" 2
+done
+
+gemm_ptx_sm70_small=$(gemm_kernel_name "$build_dir/gemm-ptx-sm70.ptx" \
+    'gemm_kernelILi64ELi64ELi2ELi2EEE')
+gemm_ptx_sm70_large=$(gemm_kernel_name "$build_dir/gemm-ptx-sm70.ptx" \
+    'gemm_kernelILi128ELi128ELi4ELi2EEE')
+gemm_sass_sm70_small=$(gemm_kernel_name "$build_dir/gemm-ptx-sm70.sass" \
+    'gemm_kernelILi64ELi64ELi2ELi2EEE')
+gemm_sass_sm70_large=$(gemm_kernel_name "$build_dir/gemm-ptx-sm70.sass" \
+    'gemm_kernelILi128ELi128ELi4ELi2EEE')
+gemm_ptx_sm75_small=$(gemm_kernel_name "$build_dir/gemm-ptx-sm75.ptx" \
+    'gemm_kernelILi64ELi64ELi2ELi2EEE')
+gemm_ptx_sm75_large=$(gemm_kernel_name "$build_dir/gemm-ptx-sm75.ptx" \
+    'gemm_kernelILi128ELi128ELi4ELi2EEE')
+gemm_sass_sm75_small=$(gemm_kernel_name "$build_dir/gemm-ptx-sm75.sass" \
+    'gemm_kernelILi64ELi64ELi2ELi2EEE')
+gemm_sass_sm75_large=$(gemm_kernel_name "$build_dir/gemm-ptx-sm75.sass" \
+    'gemm_kernelILi128ELi128ELi4ELi2EEE')
+
+for kernel_count in \
+    "$gemm_ptx_sm70_small $gemm_sass_sm70_small 16" \
+    "$gemm_ptx_sm70_large $gemm_sass_sm70_large 32"; do
+    read -r ptx_kernel sass_kernel expected <<<"$kernel_count"
+    require_ptx_kernel_opcode "$build_dir/gemm-ptx-sm70.ptx" "$ptx_kernel" \
+        "$ptx_m8" "$expected"
+    require_ptx_kernel_opcode "$build_dir/gemm-ptx-sm70.ptx" "$ptx_kernel" \
+        "$ptx_m16" 0
+    require_ptx_kernel_opcode "$build_dir/gemm-ptx-sm70.ptx" "$ptx_kernel" \
+        'wmma[.]' 0
+    require_ptx_kernel_opcode "$build_dir/gemm-ptx-sm70.ptx" "$ptx_kernel" \
+        'ldmatrix' 0
+    for step in STEP0 STEP1 STEP2 STEP3; do
+        require_kernel_opcode "$build_dir/gemm-ptx-sm70.sass" "$sass_kernel" \
+            "$boundary_start"'HMMA[.]884[.]F32[.]F32[.]'"$step""$boundary_end" \
+            "$expected"
+    done
+    require_kernel_opcode "$build_dir/gemm-ptx-sm70.sass" "$sass_kernel" \
+        "$any_hmma" "$((expected * 4))"
+    require_kernel_opcode "$build_dir/gemm-ptx-sm70.sass" "$sass_kernel" \
+        "$boundary_start"'HMMA[.]1688[.]' 0
+    require_kernel_opcode "$build_dir/gemm-ptx-sm70.sass" "$sass_kernel" \
+        "$boundary_start"'LDSM[.]' 0
+    require_kernel_opcode "$build_dir/gemm-ptx-sm70.sass" "$sass_kernel" \
+        "$any_ffma" 0
+done
+
+for kernel_count in \
+    "$gemm_ptx_sm75_small $gemm_sass_sm75_small 16" \
+    "$gemm_ptx_sm75_large $gemm_sass_sm75_large 32"; do
+    read -r ptx_kernel sass_kernel expected <<<"$kernel_count"
+    require_ptx_kernel_opcode "$build_dir/gemm-ptx-sm75.ptx" "$ptx_kernel" \
+        "$ptx_m16" "$expected"
+    require_ptx_kernel_opcode "$build_dir/gemm-ptx-sm75.ptx" "$ptx_kernel" \
+        "$ptx_m8" 0
+    require_ptx_kernel_opcode "$build_dir/gemm-ptx-sm75.ptx" "$ptx_kernel" \
+        'wmma[.]' 0
+    require_kernel_opcode "$build_dir/gemm-ptx-sm75.sass" "$sass_kernel" \
+        "$boundary_start"'HMMA[.]1688[.]F32'"$boundary_end" "$expected"
+    require_kernel_opcode "$build_dir/gemm-ptx-sm75.sass" "$sass_kernel" \
+        "$boundary_start"'HMMA[.]884[.]' 0
+    require_kernel_opcode "$build_dir/gemm-ptx-sm75.sass" "$sass_kernel" \
+        "$any_hmma" "$expected"
+    require_kernel_opcode "$build_dir/gemm-ptx-sm75.sass" "$sass_kernel" \
+        "$any_ffma" 0
 done
 reject_pattern "$build_dir/ldmatrix-sm75.ptx" \
     'cp\.async|mbarrier|wgmma|tensormap|stmatrix' "SM80+ instruction"

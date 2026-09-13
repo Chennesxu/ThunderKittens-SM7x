@@ -29,6 +29,25 @@ The first WMMA reference baseline builds native SM70 and SM75 targets and provid
 
 The API enqueues asynchronously on the supplied CUDA stream. A, B, and C must be device-accessible, alive through stream completion, and non-overlapping; before completion, A/B cannot be modified and C cannot be read or written except by accesses ordered with the GEMM on that stream.
 
+WMMA remains the default backend. Defining `KITTENS_MMA_PTX` opts a build into
+the native inline-PTX backend for its selected SM70 or SM75 target. Apply that
+definition consistently to every translation unit using the tile or backend
+headers: WMMA and PTX fragments have different representations and must not
+cross a translation-unit boundary compiled with different backend selections.
+
+The repository provides separate builds for the opt-in path:
+
+```text
+make build-ptx-sm70 build-ptx-sm75
+make test-ptx-sm75
+make sanitize-ptx-sm75
+make build-bench-ptx-sm75
+make bench-ptx-sm75
+```
+
+The SM70 PTX target is compile- and codegen-checked only; opting in does not
+change its experimental status or expand the supported architecture set.
+
 - SM75 correctness and Compute Sanitizer checks pass on the identified Turing device.
 - Compile and codegen checks pass with CUDA 11.0.3 and the local CUDA 12.4 toolkit.
 - SM70 is compile-tested and remains experimental until it is run on Volta hardware.

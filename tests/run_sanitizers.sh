@@ -26,6 +26,12 @@ case "$selector" in
         memcheck_api=()
         pass_message="PTX MMA SM75 sanitizers: PASS"
         ;;
+    gemm-ptx)
+        sanitizer_test="$build_dir/gemm-ptx-sm75"
+        build_hint=build-ptx-sm75
+        memcheck_api=(--report-api-errors no)
+        pass_message="PTX GEMM SM75 sanitizers: PASS"
+        ;;
     *)
         echo "unknown sanitizer selector: $selector" >&2
         exit 2

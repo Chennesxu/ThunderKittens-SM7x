@@ -6,6 +6,9 @@
 #include <type_traits>
 
 #include "tk_sm7x/arch.cuh"
+#if defined(KITTENS_MMA_PTX)
+#include "tk_sm7x/ptx_backend.cuh"
+#endif
 
 namespace tk_sm7x::detail {
 
@@ -55,6 +58,10 @@ struct warp_mma_f16_f16_f32_16x16x16 {
     }
 };
 
+#if defined(KITTENS_MMA_PTX)
+using active_warp_mma = ptx_warp_mma_f16_f16_f32_16x16x16<arch::target>;
+#else
 using active_warp_mma = warp_mma_f16_f16_f32_16x16x16<arch::target>;
+#endif
 
 }  // namespace tk_sm7x::detail
