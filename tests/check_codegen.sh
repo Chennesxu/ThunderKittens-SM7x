@@ -167,6 +167,8 @@ ptx_m8="$boundary_start"'mma[.]sync[.]aligned[.]m8n8k4[.]row[.]col[.]f32[.]f16[.
 ptx_m16="$boundary_start"'mma[.]sync[.]aligned[.]m16n8k8[.]row[.]col[.]f32[.]f16[.]f16[.]f32'"$boundary_end"
 ptx_x2="$boundary_start"'ldmatrix[.]sync[.]aligned[.]m8n8[.]x2[.]shared[.]b16'"$boundary_end"
 ptx_x1="$boundary_start"'ldmatrix[.]sync[.]aligned[.]m8n8[.]x1[.]shared[.]b16'"$boundary_end"
+ptx_x2_trans="$boundary_start"'ldmatrix[.]sync[.]aligned[.]m8n8[.]x2[.]trans[.]shared[.]b16'"$boundary_end"
+ptx_x1_trans="$boundary_start"'ldmatrix[.]sync[.]aligned[.]m8n8[.]x1[.]trans[.]shared[.]b16'"$boundary_end"
 
 require_kernel_opcode() {
     local sass=$1
@@ -411,15 +413,24 @@ for kernel_count in \
 done
 
 for kernel_count in \
-    "$gemm_ptx_sm75_small $gemm_sass_sm75_small 16" \
-    "$gemm_ptx_sm75_large $gemm_sass_sm75_large 32"; do
-    read -r ptx_kernel sass_kernel expected <<<"$kernel_count"
+    "$gemm_ptx_sm75_small $gemm_sass_sm75_small 16 4 8 12" \
+    "$gemm_ptx_sm75_large $gemm_sass_sm75_large 32 4 16 20"; do
+    read -r ptx_kernel sass_kernel expected x2_expected x1_expected \
+        ldsm_expected <<<"$kernel_count"
     require_ptx_kernel_opcode "$build_dir/gemm-ptx-sm75.ptx" "$ptx_kernel" \
         "$ptx_m16" "$expected"
     require_ptx_kernel_opcode "$build_dir/gemm-ptx-sm75.ptx" "$ptx_kernel" \
         "$ptx_m8" 0
     require_ptx_kernel_opcode "$build_dir/gemm-ptx-sm75.ptx" "$ptx_kernel" \
         'wmma[.]' 0
+    require_ptx_kernel_opcode "$build_dir/gemm-ptx-sm75.ptx" "$ptx_kernel" \
+        "$ptx_x2" "$x2_expected"
+    require_ptx_kernel_opcode "$build_dir/gemm-ptx-sm75.ptx" "$ptx_kernel" \
+        "$ptx_x1" "$x1_expected"
+    require_ptx_kernel_opcode "$build_dir/gemm-ptx-sm75.ptx" "$ptx_kernel" \
+        "$ptx_x2_trans" 0
+    require_ptx_kernel_opcode "$build_dir/gemm-ptx-sm75.ptx" "$ptx_kernel" \
+        "$ptx_x1_trans" 0
     require_kernel_opcode "$build_dir/gemm-ptx-sm75.sass" "$sass_kernel" \
         "$boundary_start"'HMMA[.]1688[.]F32'"$boundary_end" "$expected"
     require_kernel_opcode "$build_dir/gemm-ptx-sm75.sass" "$sass_kernel" \
@@ -428,6 +439,8 @@ for kernel_count in \
         "$any_hmma" "$expected"
     require_kernel_opcode "$build_dir/gemm-ptx-sm75.sass" "$sass_kernel" \
         "$any_ffma" 0
+    require_kernel_opcode "$build_dir/gemm-ptx-sm75.sass" "$sass_kernel" \
+        "$boundary_start"'LDSM[.]' "$ldsm_expected"
 done
 reject_pattern "$build_dir/ldmatrix-sm75.ptx" \
     'cp\.async|mbarrier|wgmma|tensormap|stmatrix' "SM80+ instruction"
@@ -450,6 +463,8 @@ done
 # still emits HMMA, so every GEMM kernel instantiation is inspected on its own.
 require_tensor_core_per_kernel "$build_dir/gemm-sm70.sass" 2
 require_tensor_core_per_kernel "$build_dir/gemm-sm75.sass" 2
+require_tensor_core_per_kernel "$build_dir/gemm-ptx-sm70.sass" 2
+require_tensor_core_per_kernel "$build_dir/gemm-ptx-sm75.sass" 2
 
 # The inline-PTX wrappers must keep emitting their intended instruction shape and
 # must not decay into a scalar path.
