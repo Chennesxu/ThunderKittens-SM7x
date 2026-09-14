@@ -18,7 +18,7 @@ and zero is also permitted. The reduction dimension `K` is positive, a multiple
 of 16, and no greater than 1024. Inputs are multiples of `2^-13`; therefore a
 product is a multiple of `2^-26`, has at most 22 significant bits, and is exact
 in FP32 and binary64. A partial signed or absolute-product sum has magnitude
-below `2^18`, so its scaled integer magnitude needs fewer than 44 bits. Binary64
+below `2^18`, so its scaled integer magnitude requires at most 44 bits. Binary64
 has 53 significant bits. Consequently the test keeps, per output cell,
 
 ```text
