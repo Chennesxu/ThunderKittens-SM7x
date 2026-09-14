@@ -48,9 +48,10 @@ make bench-ptx-sm75
 The SM70 PTX target is compile- and codegen-checked only; opting in does not
 change its experimental status or expand the supported architecture set.
 
-The differential GEMM driver builds the same six exact-domain cases with the
-WMMA, PTX m8, and (on SM75) PTX m16 backends. On SM75 it also compares the
-selected production GEMM path on the same allocations:
+The differential GEMM driver runs six exact-domain cases and eight
+full-mantissa normal-FP16 model-domain cases with the WMMA, PTX m8, and (on
+SM75) PTX m16 backends. On SM75 it also compares the selected production GEMM
+path on the same allocations:
 
 ```text
 make build-differential-sm70 build-differential-sm75
@@ -59,13 +60,16 @@ make test-differential-sm75 test-differential-ptx-sm75
 make sanitize-differential-sm75 sanitize-differential-ptx-sm75
 ```
 
-Its inputs are FP16 values q/8 for integer |q| <= 8 and K <= 1024. Products
-are exact multiples of 1/64 and the sum of product magnitudes is at most K, so
-the bounded partial sums remain exactly representable in FP32; the independent
-CPU reference uses double accumulation. This justifies finite zero-tolerance
-comparisons for these fixtures, including direct backend pairs and row-padding
-sentinels. It is not a general floating-point accuracy claim: arbitrary FP16
-inputs and their error budget remain outside this exact-domain check.
+The exact cases use FP16 values q/8 for integer |q| <= 8 and K <= 1024.
+Products are exact multiples of 1/64 and the bounded partial sums remain exactly
+representable in FP32, which justifies zero-tolerance comparisons for those
+fixtures, including direct backend pairs and row-padding sentinels. The general
+fixtures retain an exact binary64 reference and use a per-output conditional
+model-derived budget; their declared input domain, assumptions, derivation, and
+limits are in [the numerical validation model](docs/numerical-validation.md).
+This is not a universal NVIDIA accuracy guarantee: the HMMA.1688 extension is
+an assumption, arbitrary FP16 inputs are outside the declared domain, and it
+does not establish SM70 runtime correctness.
 
 - SM75 correctness and Compute Sanitizer checks pass on the identified Turing device.
 - Compile and codegen checks pass with CUDA 11.0.3 and the local CUDA 12.4 toolkit.

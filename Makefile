@@ -77,16 +77,16 @@ build-ptx-sm70: $(BUILD_DIR)/gemm-ptx-sm70
 
 build-ptx-sm75: $(BUILD_DIR)/gemm-ptx-sm75
 
-$(BUILD_DIR)/gemm-differential-sm70: src/gemm.cu tests/gemm_differential.cu tests/test_utils.cuh include/tk_sm7x/arch.cuh include/tk_sm7x/mma.cuh include/tk_sm7x/ptx_backend.cuh include/tk_sm7x/ptx_ldmatrix.cuh include/tk_sm7x/ptx_mma.cuh include/tk_sm7x/tile.cuh include/tk_sm7x/gemm.cuh | $(BUILD_DIR)
+$(BUILD_DIR)/gemm-differential-sm70: src/gemm.cu tests/gemm_differential.cu tests/numerical_bounds.hpp tests/test_utils.cuh include/tk_sm7x/arch.cuh include/tk_sm7x/mma.cuh include/tk_sm7x/ptx_backend.cuh include/tk_sm7x/ptx_ldmatrix.cuh include/tk_sm7x/ptx_mma.cuh include/tk_sm7x/tile.cuh include/tk_sm7x/gemm.cuh | $(BUILD_DIR)
 	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM70_FLAGS) src/gemm.cu tests/gemm_differential.cu -o $@
 
-$(BUILD_DIR)/gemm-differential-sm75: src/gemm.cu tests/gemm_differential.cu tests/test_utils.cuh include/tk_sm7x/arch.cuh include/tk_sm7x/mma.cuh include/tk_sm7x/ptx_backend.cuh include/tk_sm7x/ptx_ldmatrix.cuh include/tk_sm7x/ptx_mma.cuh include/tk_sm7x/tile.cuh include/tk_sm7x/gemm.cuh | $(BUILD_DIR)
+$(BUILD_DIR)/gemm-differential-sm75: src/gemm.cu tests/gemm_differential.cu tests/numerical_bounds.hpp tests/test_utils.cuh include/tk_sm7x/arch.cuh include/tk_sm7x/mma.cuh include/tk_sm7x/ptx_backend.cuh include/tk_sm7x/ptx_ldmatrix.cuh include/tk_sm7x/ptx_mma.cuh include/tk_sm7x/tile.cuh include/tk_sm7x/gemm.cuh | $(BUILD_DIR)
 	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) src/gemm.cu tests/gemm_differential.cu -o $@
 
-$(BUILD_DIR)/gemm-differential-ptx-sm70: src/gemm.cu tests/gemm_differential.cu tests/test_utils.cuh include/tk_sm7x/arch.cuh include/tk_sm7x/mma.cuh include/tk_sm7x/ptx_backend.cuh include/tk_sm7x/ptx_ldmatrix.cuh include/tk_sm7x/ptx_mma.cuh include/tk_sm7x/tile.cuh include/tk_sm7x/gemm.cuh | $(BUILD_DIR)
+$(BUILD_DIR)/gemm-differential-ptx-sm70: src/gemm.cu tests/gemm_differential.cu tests/numerical_bounds.hpp tests/test_utils.cuh include/tk_sm7x/arch.cuh include/tk_sm7x/mma.cuh include/tk_sm7x/ptx_backend.cuh include/tk_sm7x/ptx_ldmatrix.cuh include/tk_sm7x/ptx_mma.cuh include/tk_sm7x/tile.cuh include/tk_sm7x/gemm.cuh | $(BUILD_DIR)
 	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM70_FLAGS) $(PTX_MMA_FLAGS) src/gemm.cu tests/gemm_differential.cu -o $@
 
-$(BUILD_DIR)/gemm-differential-ptx-sm75: src/gemm.cu tests/gemm_differential.cu tests/test_utils.cuh include/tk_sm7x/arch.cuh include/tk_sm7x/mma.cuh include/tk_sm7x/ptx_backend.cuh include/tk_sm7x/ptx_ldmatrix.cuh include/tk_sm7x/ptx_mma.cuh include/tk_sm7x/tile.cuh include/tk_sm7x/gemm.cuh | $(BUILD_DIR)
+$(BUILD_DIR)/gemm-differential-ptx-sm75: src/gemm.cu tests/gemm_differential.cu tests/numerical_bounds.hpp tests/test_utils.cuh include/tk_sm7x/arch.cuh include/tk_sm7x/mma.cuh include/tk_sm7x/ptx_backend.cuh include/tk_sm7x/ptx_ldmatrix.cuh include/tk_sm7x/ptx_mma.cuh include/tk_sm7x/tile.cuh include/tk_sm7x/gemm.cuh | $(BUILD_DIR)
 	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) $(PTX_MMA_FLAGS) src/gemm.cu tests/gemm_differential.cu -o $@
 
 build-differential-sm70: $(BUILD_DIR)/gemm-differential-sm70

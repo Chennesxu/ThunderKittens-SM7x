@@ -58,6 +58,10 @@ int main() {
   test.expect(!within_bound(std::nextafter(0.25, std::numeric_limits<double>::infinity()),
                             0.0, 0.25),
               "inclusive comparator rejects the next double outside the boundary");
+  test.expect(within_bound(-0.25, 0.0, 0.25),
+              "inclusive comparator accepts the exact negative boundary");
+  test.expect(!within_bound(std::nextafter(-0.25, -infinity), 0.0, 0.25),
+              "inclusive comparator rejects the next double below the negative boundary");
   test.expect(within_bound(-0.0, 0.0, 0.0),
               "inclusive comparator accepts equal signed zeros with zero budget");
 

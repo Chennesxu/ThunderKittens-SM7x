@@ -8,9 +8,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 #include "test_utils.cuh"
+#include "numerical_bounds.hpp"
 #include "tk_sm7x/gemm.cuh"
 #include "tk_sm7x/mma.cuh"
 #include "tk_sm7x/ptx_backend.cuh"
@@ -27,7 +29,19 @@ constexpr int kOutputCount = 3;
 constexpr int kExpectedPairCount = 3;
 #endif
 
-enum class Pattern { identity, signed_seed_a, signed_seed_b, cancellation };
+enum class Pattern {
+    identity,
+    signed_seed_a,
+    signed_seed_b,
+    cancellation,
+    rounded_positive,
+    rounded_signed,
+    rounded_mixed,
+    rounded_cancellation,
+    rounded_zero,
+};
+
+enum class ComparisonMode { exact, model };
 
 struct GemmCase {
     const char* name;
@@ -38,6 +52,12 @@ struct GemmCase {
     int ldb;
     int ldc;
     Pattern pattern;
+};
+
+struct ReferenceCell {
+    double value;
+    double sum_abs;
+    double bound;
 };
 
 template <class Backend>
@@ -120,9 +140,87 @@ __half value_from_q(int q) { return __float2half(static_cast<float>(q) / 8.0f); 
 
 int signed_q(int row, int col, int seed) { return (row * 3 + col * 5 + seed) % 17 - 8; }
 
+std::uint32_t fingerprint(int row, int col, std::uint32_t seed) {
+    std::uint32_t value = static_cast<std::uint32_t>(row) * 0x9e3779b9u ^
+                          static_cast<std::uint32_t>(col) * 0x85ebca6bu ^ seed;
+    value ^= value >> 16;
+    value *= 0x7feb352du;
+    value ^= value >> 15;
+    value *= 0x846ca68bu;
+    return value ^ (value >> 16);
+}
+
+__half rounded_value(std::uint32_t hash, Pattern pattern, bool negate) {
+    const int exponent = pattern == Pattern::rounded_mixed ? static_cast<int>((hash >> 10) % 7) - 3 : 0;
+    float value = std::ldexp(1.0f + static_cast<float>(hash & 1023u) / 1024.0f, exponent);
+    if (negate || ((pattern == Pattern::rounded_signed || pattern == Pattern::rounded_mixed) && (hash >> 31))) {
+        value = -value;
+    }
+    return __float2half(value);
+}
+
+bool is_model_pattern(Pattern pattern) {
+    return pattern == Pattern::rounded_positive || pattern == Pattern::rounded_signed ||
+           pattern == Pattern::rounded_mixed || pattern == Pattern::rounded_cancellation ||
+           pattern == Pattern::rounded_zero;
+}
+
+bool is_model_value(__half value) {
+    std::uint16_t encoded = 0;
+    std::memcpy(&encoded, &value, sizeof(encoded));
+    const std::uint16_t magnitude = encoded & 0x7fffu;
+    if (magnitude == 0) return true;
+    const int exponent = static_cast<int>((magnitude >> 10) & 0x1fu);
+    return exponent >= 12 && exponent <= 18;
+}
+
+bool validate_model_domain(const GemmCase& test_case, const std::vector<__half>& a,
+                           const std::vector<__half>& b) {
+    if (test_case.k <= 0 || test_case.k % 16 != 0 || test_case.k > 1024) {
+        std::fprintf(stderr, "%s invalid model K=%d\n", test_case.name, test_case.k);
+        return false;
+    }
+    for (int row = 0; row < test_case.m; ++row) {
+        for (int col = 0; col < test_case.k; ++col) {
+            if (!is_model_value(a[static_cast<std::size_t>(row) * test_case.lda + col])) {
+                std::fprintf(stderr, "%s invalid model A input row=%d col=%d\n", test_case.name, row, col);
+                return false;
+            }
+        }
+    }
+    for (int row = 0; row < test_case.k; ++row) {
+        for (int col = 0; col < test_case.n; ++col) {
+            if (!is_model_value(b[static_cast<std::size_t>(row) * test_case.ldb + col])) {
+                std::fprintf(stderr, "%s invalid model B input row=%d col=%d\n", test_case.name, row, col);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 void fill_inputs(const GemmCase& test_case, std::vector<__half>* a, std::vector<__half>* b) {
     std::fill(a->begin(), a->end(), value_from_q(7));
     std::fill(b->begin(), b->end(), value_from_q(7));
+    if (is_model_pattern(test_case.pattern)) {
+        for (int row = 0; row < test_case.m; ++row) {
+            for (int col = 0; col < test_case.k; ++col) {
+                const int coordinate = test_case.pattern == Pattern::rounded_cancellation ? col % (test_case.k / 2) : col;
+                const bool negate = test_case.pattern == Pattern::rounded_cancellation && col >= test_case.k / 2;
+                (*a)[static_cast<std::size_t>(row) * test_case.lda + col] =
+                    test_case.pattern == Pattern::rounded_zero ? __float2half(0.0f) :
+                    rounded_value(fingerprint(row, coordinate, 17u), test_case.pattern, negate);
+            }
+        }
+        for (int row = 0; row < test_case.k; ++row) {
+            for (int col = 0; col < test_case.n; ++col) {
+                const int coordinate = test_case.pattern == Pattern::rounded_cancellation ? row % (test_case.k / 2) : row;
+                (*b)[static_cast<std::size_t>(row) * test_case.ldb + col] =
+                    rounded_value(fingerprint(coordinate, col, 83u), test_case.pattern, false);
+            }
+        }
+        return;
+    }
     for (int row = 0; row < test_case.m; ++row) {
         for (int col = 0; col < test_case.k; ++col) {
             const int q = test_case.pattern == Pattern::cancellation
@@ -141,17 +239,24 @@ void fill_inputs(const GemmCase& test_case, std::vector<__half>* a, std::vector<
     }
 }
 
-std::vector<float> make_reference(const GemmCase& test_case,
-                                  const std::vector<__half>& a, const std::vector<__half>& b) {
-    std::vector<float> reference(static_cast<std::size_t>(test_case.m) * test_case.ldc, sentinel());
+std::vector<ReferenceCell> make_reference(const GemmCase& test_case,
+                                          const std::vector<__half>& a, const std::vector<__half>& b,
+                                          ComparisonMode comparison) {
+    std::vector<ReferenceCell> reference(static_cast<std::size_t>(test_case.m) * test_case.ldc,
+                                         {std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0});
     for (int row = 0; row < test_case.m; ++row) {
         for (int col = 0; col < test_case.n; ++col) {
             double sum = 0.0;
+            double sum_abs = 0.0;
             for (int kk = 0; kk < test_case.k; ++kk) {
-                sum += static_cast<double>(__half2float(a[static_cast<std::size_t>(row) * test_case.lda + kk])) *
-                       static_cast<double>(__half2float(b[static_cast<std::size_t>(kk) * test_case.ldb + col]));
+                const double product = static_cast<double>(__half2float(a[static_cast<std::size_t>(row) * test_case.lda + kk])) *
+                                       static_cast<double>(__half2float(b[static_cast<std::size_t>(kk) * test_case.ldb + col]));
+                sum += product;
+                sum_abs += std::fabs(product);
             }
-            reference[static_cast<std::size_t>(row) * test_case.ldc + col] = static_cast<float>(sum);
+            const double bound = comparison == ComparisonMode::model
+                ? tk_sm7x::test::numerical::error_bound(test_case.k, sum_abs) : 0.0;
+            reference[static_cast<std::size_t>(row) * test_case.ldc + col] = {sum, sum_abs, bound};
         }
     }
     return reference;
@@ -177,43 +282,161 @@ bool check_output(const GemmCase& test_case, const char* name, const std::vector
     return true;
 }
 
-bool check_pair(const GemmCase& test_case, const char* left_name, const std::vector<float>& left,
-                const char* right_name, const std::vector<float>& right) {
+bool check_model_reference(const GemmCase& test_case, const std::vector<ReferenceCell>& reference) {
     for (int row = 0; row < test_case.m; ++row) {
         for (int col = 0; col < test_case.n; ++col) {
             const std::size_t index = static_cast<std::size_t>(row) * test_case.ldc + col;
-            if (left[index] != right[index]) {
-                std::fprintf(stderr, "%s direct backend mismatch %s/%s row=%d col=%d left=%g right=%g\n",
-                             test_case.name, left_name, right_name, row, col, left[index], right[index]);
+            const ReferenceCell& cell = reference[index];
+            if (!std::isfinite(cell.value) || !std::isfinite(cell.sum_abs) || cell.sum_abs < 0.0 ||
+                !std::isfinite(cell.bound) || cell.bound < 0.0 ||
+                (cell.sum_abs == 0.0 && cell.bound != 0.0)) {
+                std::fprintf(stderr, "%s invalid model reference row=%d col=%d R=%.17g S=%.17g E=%.17g\n",
+                             test_case.name, row, col, cell.value, cell.sum_abs, cell.bound);
                 return false;
             }
         }
     }
     return true;
+}
+
+bool check_double_reference_requirement(const GemmCase& test_case,
+                                        const std::vector<ReferenceCell>& reference) {
+    if (test_case.pattern != Pattern::rounded_positive) return true;
+    std::size_t not_float_representable = 0;
+    for (int row = 0; row < test_case.m; ++row) {
+        for (int col = 0; col < test_case.n; ++col) {
+            const double value = reference[static_cast<std::size_t>(row) * test_case.ldc + col].value;
+            not_float_representable += static_cast<double>(static_cast<float>(value)) != value;
+        }
+    }
+    const std::size_t total = static_cast<std::size_t>(test_case.m) * test_case.n;
+    std::printf("%s non-float-reference=%zu/%zu\n", test_case.name, not_float_representable, total);
+    if (not_float_representable == 0) {
+        std::fprintf(stderr, "%s lacks a double-only reference cell\n", test_case.name);
+        return false;
+    }
+    return true;
+}
+
+double error_ratio(double error, double bound) {
+    if (bound == 0.0) return error == 0.0 ? 0.0 : std::numeric_limits<double>::infinity();
+    return error / bound;
+}
+
+struct ComparisonStats {
+    std::size_t exact = 0;
+    std::size_t different = 0;
+    double max_abs = 0.0;
+    double max_ratio = 0.0;
+    bool within = true;
+    int failure_row = -1;
+    int failure_col = -1;
+    double failure_error = 0.0;
+    double failure_bound = 0.0;
+
+    void observe(bool exact_match, double error, double bound, bool accepted, int row, int col) {
+        if (exact_match) {
+            ++exact;
+        } else {
+            ++different;
+        }
+        max_abs = std::max(max_abs, error);
+        max_ratio = std::max(max_ratio, error_ratio(error, bound));
+        if (!accepted && within) {
+            within = false;
+            failure_row = row;
+            failure_col = col;
+            failure_error = error;
+            failure_bound = bound;
+        }
+    }
+};
+
+bool check_pair(const GemmCase& test_case, const char* left_name, const std::vector<float>& left,
+                const char* right_name, const std::vector<float>& right,
+                const std::vector<ReferenceCell>& reference, ComparisonMode comparison) {
+    if (comparison == ComparisonMode::exact) {
+        for (int row = 0; row < test_case.m; ++row) {
+            for (int col = 0; col < test_case.n; ++col) {
+                const std::size_t index = static_cast<std::size_t>(row) * test_case.ldc + col;
+                if (left[index] != right[index]) {
+                    std::fprintf(stderr, "%s direct backend mismatch %s/%s row=%d col=%d left=%g right=%g\n",
+                                 test_case.name, left_name, right_name, row, col, left[index], right[index]);
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+    ComparisonStats stats;
+    for (int row = 0; row < test_case.m; ++row) {
+        for (int col = 0; col < test_case.n; ++col) {
+            const std::size_t index = static_cast<std::size_t>(row) * test_case.ldc + col;
+            const double error = std::fabs(static_cast<double>(left[index]) - static_cast<double>(right[index]));
+            const double bound = 2.0 * reference[index].bound;
+            stats.observe(left[index] == right[index], error, bound,
+                          tk_sm7x::test::numerical::within_bound(left[index], right[index], bound), row, col);
+        }
+    }
+    const std::size_t total = static_cast<std::size_t>(test_case.m) * test_case.n;
+    std::printf("%s %s/%s exact=%zu/%zu different=%zu/%zu max_abs=%.17g max_ratio=%.17g\n",
+                test_case.name, left_name, right_name, stats.exact, total, stats.different, total,
+                stats.max_abs, stats.max_ratio);
+    if (!stats.within) {
+        std::fprintf(stderr, "%s direct model budget mismatch %s/%s row=%d col=%d error=%.17g budget=%.17g\n",
+                     test_case.name, left_name, right_name, stats.failure_row, stats.failure_col,
+                     stats.failure_error, stats.failure_bound);
+    }
+    return stats.within;
 }
 
 bool check_cpu(const GemmCase& test_case, const char* name,
-               const std::vector<float>& actual, const std::vector<float>& reference) {
+               const std::vector<float>& actual, const std::vector<ReferenceCell>& reference,
+               ComparisonMode comparison) {
+    if (comparison == ComparisonMode::exact) {
+        for (int row = 0; row < test_case.m; ++row) {
+            for (int col = 0; col < test_case.n; ++col) {
+                const std::size_t index = static_cast<std::size_t>(row) * test_case.ldc + col;
+                if (static_cast<double>(actual[index]) != reference[index].value) {
+                    std::fprintf(stderr, "%s %s CPU mismatch row=%d col=%d got=%g want=%g\n",
+                                 test_case.name, name, row, col, actual[index], reference[index].value);
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+    ComparisonStats stats;
     for (int row = 0; row < test_case.m; ++row) {
         for (int col = 0; col < test_case.n; ++col) {
             const std::size_t index = static_cast<std::size_t>(row) * test_case.ldc + col;
-            if (actual[index] != reference[index]) {
-                std::fprintf(stderr, "%s %s CPU mismatch row=%d col=%d got=%g want=%g\n",
-                             test_case.name, name, row, col, actual[index], reference[index]);
-                return false;
-            }
+            const double error = std::fabs(static_cast<double>(actual[index]) - reference[index].value);
+            const double bound = reference[index].bound;
+            stats.observe(static_cast<double>(actual[index]) == reference[index].value, error, bound,
+                          tk_sm7x::test::numerical::within_bound(actual[index], reference[index].value, bound),
+                          row, col);
         }
     }
-    return true;
+    const std::size_t total = static_cast<std::size_t>(test_case.m) * test_case.n;
+    std::printf("%s %s/CPU exact=%zu/%zu different=%zu/%zu max_abs=%.17g max_ratio=%.17g\n",
+                test_case.name, name, stats.exact, total, stats.different, total, stats.max_abs, stats.max_ratio);
+    if (!stats.within) {
+        std::fprintf(stderr, "%s CPU model budget mismatch %s row=%d col=%d error=%.17g budget=%.17g\n",
+                     test_case.name, name, stats.failure_row, stats.failure_col, stats.failure_error,
+                     stats.failure_bound);
+    }
+    return stats.within;
 }
 
-bool run_case(const GemmCase& test_case, cudaStream_t stream) {
+bool run_case(const GemmCase& test_case, cudaStream_t stream, ComparisonMode comparison) {
     std::vector<__half> a(static_cast<std::size_t>(test_case.m) * test_case.lda);
     std::vector<__half> b(static_cast<std::size_t>(test_case.k) * test_case.ldb);
     std::vector<float> outputs[kOutputCount];
     for (std::vector<float>& output : outputs) output.assign(static_cast<std::size_t>(test_case.m) * test_case.ldc, sentinel());
     fill_inputs(test_case, &a, &b);
-    const std::vector<float> reference = make_reference(test_case, a, b);
+    if (comparison == ComparisonMode::model && !validate_model_domain(test_case, a, b)) return false;
+    const std::vector<ReferenceCell> reference = make_reference(test_case, a, b, comparison);
+    if (comparison == ComparisonMode::model && !check_double_reference_requirement(test_case, reference)) return false;
     __half* device_a = nullptr;
     __half* device_b = nullptr;
     float* device_outputs[kOutputCount] = {};
@@ -255,17 +478,23 @@ bool run_case(const GemmCase& test_case, cudaStream_t stream) {
 #endif
     bool matched = copied_back;
     for (int index = 0; index < kOutputCount; ++index) matched = check_output(test_case, names[index], outputs[index]) && matched;
+    if (comparison == ComparisonMode::model) matched = check_model_reference(test_case, reference) && matched;
     int pair_count = 0;
     for (int left = 0; left < kOutputCount; ++left) for (int right = left + 1; right < kOutputCount; ++right) {
-        matched = check_pair(test_case, names[left], outputs[left], names[right], outputs[right]) && matched;
+        matched = check_pair(test_case, names[left], outputs[left], names[right], outputs[right], reference, comparison) && matched;
         ++pair_count;
     }
     if (pair_count != kExpectedPairCount) {
         std::fprintf(stderr, "%s expected %d direct backend pairs, got %d\n", test_case.name, kExpectedPairCount, pair_count);
         matched = false;
     }
-    for (int index = 0; index < kOutputCount; ++index) matched = check_cpu(test_case, names[index], outputs[index], reference) && matched;
-    if (matched) std::printf("%s: direct pairs=%d, CPU comparisons=%d PASS\n", test_case.name, pair_count, kOutputCount);
+    for (int index = 0; index < kOutputCount; ++index) {
+        matched = check_cpu(test_case, names[index], outputs[index], reference, comparison) && matched;
+    }
+    if (matched) {
+        std::printf("%s: direct pairs=%d, CPU comparisons=%d %s PASS\n", test_case.name, pair_count,
+                    kOutputCount, comparison == ComparisonMode::model ? "model-budget" : "exact");
+    }
     return release() && matched;
 }
 
@@ -286,7 +515,18 @@ int main() {
         {"production-large", 1024, 1024, 32, 40, 1032, 1028, Pattern::signed_seed_b},
     };
     bool passed = true;
-    for (const GemmCase& test_case : test_cases) passed = run_case(test_case, stream) && passed;
+    for (const GemmCase& test_case : test_cases) passed = run_case(test_case, stream, ComparisonMode::exact) && passed;
+    const GemmCase model_cases[] = {
+        {"rounded-positive-short", 16, 16, 16, 24, 24, 20, Pattern::rounded_positive},
+        {"rounded-positive-long", 16, 16, 1024, 1032, 24, 20, Pattern::rounded_positive},
+        {"rounded-signed", 32, 48, 256, 264, 56, 52, Pattern::rounded_signed},
+        {"rounded-mixed", 32, 48, 256, 264, 56, 52, Pattern::rounded_mixed},
+        {"rounded-cancellation", 16, 32, 1024, 1032, 40, 36, Pattern::rounded_cancellation},
+        {"rounded-zero", 16, 16, 32, 40, 24, 20, Pattern::rounded_zero},
+        {"rounded-production-small", 256, 384, 64, 72, 392, 388, Pattern::rounded_mixed},
+        {"rounded-production-large", 1024, 1024, 32, 40, 1032, 1028, Pattern::rounded_mixed},
+    };
+    for (const GemmCase& test_case : model_cases) passed = run_case(test_case, stream, ComparisonMode::model) && passed;
     const bool destroyed = tk_sm7x::test::cuda_ok(cudaStreamDestroy(stream), "cudaStreamDestroy");
     return passed && destroyed ? EXIT_SUCCESS : EXIT_FAILURE;
 }
