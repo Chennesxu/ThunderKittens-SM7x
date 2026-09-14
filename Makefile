@@ -7,9 +7,9 @@ SM70_FLAGS := -DKITTENS_SM70 -gencode arch=compute_70,code=sm_70
 SM75_FLAGS := -DKITTENS_SM75 -gencode arch=compute_75,code=sm_75
 PTX_MMA_FLAGS := -DKITTENS_MMA_PTX
 
-.PHONY: all check-arch check-codegen build-mma-sm70 build-mma-sm75 test-mma-sm75 build-sm70 build-sm75 test-sm75 sanitize-sm75 build-ptx-sm70 build-ptx-sm75 test-ptx-sm75 sanitize-ptx-sm75 build-bench-sm75 bench-sm75 build-bench-ptx-sm75 bench-ptx-sm75 build-layout-sm70 build-layout-sm75 test-layout-sm75 build-ldmatrix-sm75 test-ldmatrix-sm75 build-ptx-mma-sm70 build-ptx-mma-sm75 test-ptx-mma-sm75 sanitize-ptx-mma-sm75 clean
+.PHONY: all check-arch check-codegen build-mma-sm70 build-mma-sm75 test-mma-sm75 build-sm70 build-sm75 test-sm75 sanitize-sm75 build-ptx-sm70 build-ptx-sm75 test-ptx-sm75 sanitize-ptx-sm75 build-bench-sm75 bench-sm75 build-bench-ptx-sm75 bench-ptx-sm75 build-layout-sm70 build-layout-sm75 test-layout-sm75 build-ldmatrix-sm75 test-ldmatrix-sm75 build-ptx-mma-sm70 build-ptx-mma-sm75 test-ptx-mma-sm75 sanitize-ptx-mma-sm75 build-differential-sm70 build-differential-sm75 build-differential-ptx-sm70 build-differential-ptx-sm75 test-differential-sm75 test-differential-ptx-sm75 sanitize-differential-sm75 sanitize-differential-ptx-sm75 clean
 
-all: check-arch check-codegen build-mma-sm70 build-mma-sm75 build-layout-sm70 build-layout-sm75 build-ldmatrix-sm75 build-ptx-mma-sm70 build-ptx-mma-sm75 build-sm70 build-sm75 build-ptx-sm70 build-ptx-sm75
+all: check-arch check-codegen build-mma-sm70 build-mma-sm75 build-layout-sm70 build-layout-sm75 build-ldmatrix-sm75 build-ptx-mma-sm70 build-ptx-mma-sm75 build-sm70 build-sm75 build-ptx-sm70 build-ptx-sm75 build-differential-sm70 build-differential-sm75 build-differential-ptx-sm70 build-differential-ptx-sm75
 
 $(BUILD_DIR):
 	mkdir -p "$(BUILD_DIR)"
@@ -69,6 +69,46 @@ $(BUILD_DIR)/gemm-ptx-sm75: src/gemm.cu tests/gemm_correctness.cu \
 build-ptx-sm70: $(BUILD_DIR)/gemm-ptx-sm70
 
 build-ptx-sm75: $(BUILD_DIR)/gemm-ptx-sm75
+
+$(BUILD_DIR)/gemm-differential-sm70: src/gemm.cu tests/gemm_differential.cu tests/test_utils.cuh include/tk_sm7x/arch.cuh include/tk_sm7x/mma.cuh include/tk_sm7x/ptx_backend.cuh include/tk_sm7x/ptx_ldmatrix.cuh include/tk_sm7x/ptx_mma.cuh include/tk_sm7x/tile.cuh include/tk_sm7x/gemm.cuh | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM70_FLAGS) src/gemm.cu tests/gemm_differential.cu -o $@
+
+$(BUILD_DIR)/gemm-differential-sm75: src/gemm.cu tests/gemm_differential.cu tests/test_utils.cuh include/tk_sm7x/arch.cuh include/tk_sm7x/mma.cuh include/tk_sm7x/ptx_backend.cuh include/tk_sm7x/ptx_ldmatrix.cuh include/tk_sm7x/ptx_mma.cuh include/tk_sm7x/tile.cuh include/tk_sm7x/gemm.cuh | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) src/gemm.cu tests/gemm_differential.cu -o $@
+
+$(BUILD_DIR)/gemm-differential-ptx-sm70: src/gemm.cu tests/gemm_differential.cu tests/test_utils.cuh include/tk_sm7x/arch.cuh include/tk_sm7x/mma.cuh include/tk_sm7x/ptx_backend.cuh include/tk_sm7x/ptx_ldmatrix.cuh include/tk_sm7x/ptx_mma.cuh include/tk_sm7x/tile.cuh include/tk_sm7x/gemm.cuh | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM70_FLAGS) $(PTX_MMA_FLAGS) src/gemm.cu tests/gemm_differential.cu -o $@
+
+$(BUILD_DIR)/gemm-differential-ptx-sm75: src/gemm.cu tests/gemm_differential.cu tests/test_utils.cuh include/tk_sm7x/arch.cuh include/tk_sm7x/mma.cuh include/tk_sm7x/ptx_backend.cuh include/tk_sm7x/ptx_ldmatrix.cuh include/tk_sm7x/ptx_mma.cuh include/tk_sm7x/tile.cuh include/tk_sm7x/gemm.cuh | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) $(PTX_MMA_FLAGS) src/gemm.cu tests/gemm_differential.cu -o $@
+
+build-differential-sm70: $(BUILD_DIR)/gemm-differential-sm70
+
+build-differential-sm75: $(BUILD_DIR)/gemm-differential-sm75
+
+build-differential-ptx-sm70: $(BUILD_DIR)/gemm-differential-ptx-sm70
+
+build-differential-ptx-sm75: $(BUILD_DIR)/gemm-differential-ptx-sm75
+
+test-differential-sm75: build-differential-sm75
+	@status=0; "$(BUILD_DIR)/gemm-differential-sm75" || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: differential SM75 runtime validation pending (binary exit 77)"; exit 0; fi; \
+	exit $$status
+
+test-differential-ptx-sm75: build-differential-ptx-sm75
+	@status=0; "$(BUILD_DIR)/gemm-differential-ptx-sm75" || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: PTX differential SM75 runtime validation pending (binary exit 77)"; exit 0; fi; \
+	exit $$status
+
+sanitize-differential-sm75: build-differential-sm75
+	@status=0; BUILD_DIR="$(BUILD_DIR)" bash tests/run_sanitizers.sh differential || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: differential SM75 sanitizer validation pending (script exit 77)"; exit 0; fi; \
+	exit $$status
+
+sanitize-differential-ptx-sm75: build-differential-ptx-sm75
+	@status=0; BUILD_DIR="$(BUILD_DIR)" bash tests/run_sanitizers.sh differential-ptx || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: PTX differential SM75 sanitizer validation pending (script exit 77)"; exit 0; fi; \
+	exit $$status
 
 test-ptx-sm75: build-ptx-sm75
 	@status=0; "$(BUILD_DIR)/gemm-ptx-sm75" || status=$$?; \

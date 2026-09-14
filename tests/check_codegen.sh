@@ -317,13 +317,15 @@ compile_target gemm src/gemm.cu sm70 KITTENS_SM70 compute_70 sm_70
 compile_target gemm src/gemm.cu sm75 KITTENS_SM75 compute_75 sm_75
 compile_target gemm-ptx src/gemm.cu sm70 KITTENS_SM70 compute_70 sm_70 KITTENS_MMA_PTX
 compile_target gemm-ptx src/gemm.cu sm75 KITTENS_SM75 compute_75 sm_75 KITTENS_MMA_PTX
+compile_target differential tests/gemm_differential.cu sm70 KITTENS_SM70 compute_70 sm_70
+compile_target differential tests/gemm_differential.cu sm75 KITTENS_SM75 compute_75 sm_75
 expect_backend_mismatch sm70 KITTENS_SM70 sm_70
 expect_backend_mismatch sm75 KITTENS_SM75 sm_75
 expect_layout_reject sm70 KITTENS_SM70 sm_70
 expect_layout_reject sm75 KITTENS_SM75 sm_75
 expect_ptx_backend_capability
 
-for prefix in ldmatrix ptx-backend mma gemm gemm-ptx; do
+for prefix in ldmatrix ptx-backend mma gemm gemm-ptx differential; do
     if [[ "$prefix" == ldmatrix ]]; then
         require_pattern "$build_dir/$prefix-sm75.ptx" '\.target[[:space:]]+sm_75' \
             "sm_75 target"
@@ -552,5 +554,59 @@ require_kernel_opcode "$build_dir/ptx-backend-sm75.sass" \
     codegen_ptx_backend_sm75 "$any_ffma" 0
 require_kernel_opcode "$build_dir/ptx-backend-sm75.sass" \
     codegen_ptx_backend_sm75 "$boundary_start"'LDSM[.]' 6
+
+for label in sm70 sm75; do
+    require_ptx_kernel_opcode "$build_dir/differential-$label.ptx" \
+        differential_wmma 'wmma[.]' 4
+    require_ptx_kernel_opcode "$build_dir/differential-$label.ptx" \
+        differential_wmma "$ptx_m8" 0
+    require_ptx_kernel_opcode "$build_dir/differential-$label.ptx" \
+        differential_wmma "$ptx_m16" 0
+    require_kernel_opcode "$build_dir/differential-$label.sass" \
+        differential_wmma "$any_ffma" 0
+    require_ptx_kernel_opcode "$build_dir/differential-$label.ptx" \
+        differential_m8 "$ptx_m8" 4
+    require_ptx_kernel_opcode "$build_dir/differential-$label.ptx" \
+        differential_m8 "$ptx_m16" 0
+    require_ptx_kernel_opcode "$build_dir/differential-$label.ptx" \
+        differential_m8 'wmma[.]' 0
+    require_ptx_kernel_opcode "$build_dir/differential-$label.ptx" \
+        differential_m8 'ldmatrix' 0
+    for step in STEP0 STEP1 STEP2 STEP3; do
+        require_kernel_opcode "$build_dir/differential-$label.sass" differential_m8 \
+            "$boundary_start"'HMMA[.]884[.]F32[.]F32[.]'"$step""$boundary_end" 4
+    done
+    require_kernel_opcode "$build_dir/differential-$label.sass" differential_m8 "$any_hmma" 16
+    require_kernel_opcode "$build_dir/differential-$label.sass" differential_m8 "$any_ffma" 0
+    require_kernel_opcode "$build_dir/differential-$label.sass" differential_m8 \
+        "$boundary_start"'LDSM[.]' 0
+done
+
+require_kernel_opcode "$build_dir/differential-sm70.sass" differential_wmma \
+    "$any_hmma" 16
+require_kernel_opcode "$build_dir/differential-sm75.sass" differential_wmma \
+    "$any_hmma" 4
+reject_pattern "$build_dir/differential-sm70.ptx" 'ldmatrix|m16n8k8|m16n8k16' \
+    "SM75+ differential instruction"
+reject_pattern "$build_dir/differential-sm70.sass" 'HMMA[.]1688|LDSM' \
+    "SM75+ differential SASS"
+require_ptx_kernel_opcode "$build_dir/differential-sm75.ptx" differential_m16 \
+    "$ptx_m16" 4
+require_ptx_kernel_opcode "$build_dir/differential-sm75.ptx" differential_m16 \
+    "$ptx_m8" 0
+require_ptx_kernel_opcode "$build_dir/differential-sm75.ptx" differential_m16 \
+    'wmma[.]' 0
+require_ptx_kernel_opcode "$build_dir/differential-sm75.ptx" differential_m16 \
+    "$ptx_x2" 2
+require_ptx_kernel_opcode "$build_dir/differential-sm75.ptx" differential_m16 \
+    "$ptx_x1" 4
+require_ptx_kernel_opcode "$build_dir/differential-sm75.ptx" differential_m16 \
+    'ldmatrix[.].*[.]trans' 0
+require_kernel_opcode "$build_dir/differential-sm75.sass" differential_m16 \
+    "$boundary_start"'HMMA[.]1688[.]F32'"$boundary_end" 4
+require_kernel_opcode "$build_dir/differential-sm75.sass" differential_m16 "$any_hmma" 4
+require_kernel_opcode "$build_dir/differential-sm75.sass" differential_m16 "$any_ffma" 0
+require_kernel_opcode "$build_dir/differential-sm75.sass" differential_m16 \
+    "$boundary_start"'LDSM[.]' 6
 
 echo "codegen gate: PASS"
