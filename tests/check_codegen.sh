@@ -169,7 +169,7 @@ ptx_x2="$boundary_start"'ldmatrix[.]sync[.]aligned[.]m8n8[.]x2[.]shared[.]b16'"$
 ptx_x1="$boundary_start"'ldmatrix[.]sync[.]aligned[.]m8n8[.]x1[.]shared[.]b16'"$boundary_end"
 ptx_x2_trans="$boundary_start"'ldmatrix[.]sync[.]aligned[.]m8n8[.]x2[.]trans[.]shared[.]b16'"$boundary_end"
 ptx_x1_trans="$boundary_start"'ldmatrix[.]sync[.]aligned[.]m8n8[.]x1[.]trans[.]shared[.]b16'"$boundary_end"
-forbidden_differential_ptx='cp[.]async|mbarrier|wgmma|tcgen05|tensormap|stmatrix|multimem|m16n8k16'
+forbidden_differential_ptx="$boundary_start"'(cp[.]async|mbarrier|wgmma|tcgen05|tensormap|stmatrix|multimem)([.]|[^A-Za-z0-9_]|$)|'"$boundary_start"'mma[.]sync[.]aligned[.]m16n8k16[.]'
 forbidden_differential_sass="$boundary_start"'(LDGSTS|HGMMA|BGMMA|IGMMA|QGMMA|WARPGROUP|WARPGROUPSET|UTMALDG|UTMASTG|UBLKCP|STSM)([.]|[^A-Za-z0-9_]|$)'
 
 verify_differential_hmma_counts() {
@@ -188,17 +188,34 @@ verify_differential_hmma_counts() {
 exercise_differential_forbidden_isa_rejection() {
     local label=$1
     local ptx_probe="$build_dir/differential-$label.ptx.forbidden.probe"
+    local ptx_m16_probe="$build_dir/differential-$label.ptx.m16n8k16.probe"
+    local ptx_control="$build_dir/differential-$label.ptx.boundary.probe"
     local sass_probe="$build_dir/differential-$label.sass.forbidden.probe"
     local sass_control="$build_dir/differential-$label.sass.boundary.probe"
     cp "$build_dir/differential-$label.ptx" "$ptx_probe"
+    cp "$build_dir/differential-$label.ptx" "$ptx_m16_probe"
+    cp "$build_dir/differential-$label.ptx" "$ptx_control"
     cp "$build_dir/differential-$label.sass" "$sass_probe"
     cp "$build_dir/differential-$label.sass" "$sass_control"
     printf '\ncp.async.ca.shared.global [%%r1], [%%rd1], 16;\n' >>"$ptx_probe"
+    printf '\nmma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32;\n' >>"$ptx_m16_probe"
+    printf '\nxcp.async.ca.shared.global [%%r1], [%%rd1], 16;\n' >>"$ptx_control"
+    printf '\nmma.sync.aligned.m16n8k16x.row.col.f32.f16.f16.f32;\n' >>"$ptx_control"
     printf '\n/*0000*/ LDGSTS.128 RZ, [RZ];\n' >>"$sass_probe"
     printf '\n/*0000*/ XLDGSTS.128 RZ, [RZ];\n' >>"$sass_control"
     if (reject_pattern "$ptx_probe" "$forbidden_differential_ptx" \
         "injected differential PTX instruction") >/dev/null 2>&1; then
         echo "differential PTX blacklist accepted injected artifact: $label" >&2
+        exit 1
+    fi
+    if (reject_pattern "$ptx_m16_probe" "$forbidden_differential_ptx" \
+        "injected differential PTX m16n8k16 instruction") >/dev/null 2>&1; then
+        echo "differential PTX blacklist accepted injected m16n8k16 artifact: $label" >&2
+        exit 1
+    fi
+    if ! (reject_pattern "$ptx_control" "$forbidden_differential_ptx" \
+        "fixed differential PTX boundary control") >/dev/null 2>&1; then
+        echo "differential PTX blacklist rejected a boundary control: $label" >&2
         exit 1
     fi
     if (reject_pattern "$sass_probe" "$forbidden_differential_sass" \
@@ -211,7 +228,7 @@ exercise_differential_forbidden_isa_rejection() {
         echo "differential SASS blacklist rejected a prefixed control: $label" >&2
         exit 1
     fi
-    rm -f -- "$ptx_probe" "$sass_probe" "$sass_control"
+    rm -f -- "$ptx_probe" "$ptx_m16_probe" "$ptx_control" "$sass_probe" "$sass_control"
 }
 
 require_kernel_opcode() {
