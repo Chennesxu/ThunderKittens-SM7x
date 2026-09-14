@@ -32,9 +32,11 @@ as exact binary64 values for this domain. `R_ij` is not rounded back to FP32.
 
 Let a block consume `b >= 1` exact products and an incoming FP32 accumulator
 `c`. Put `M = max(abs(c), abs(products))`, `T = abs(c) + sum(abs(products))`,
-and `eps = 2^-23`. The model assumes common-exponent alignment changes a term
-by less than one grid quantum `q <= eps M`, with at least one maximal-exponent
-term unchanged. At most `b` alignments incur loss; aligned terms are summed with
+and `eps = 2^-23`. If `M = 0`, all products and the incoming accumulator are
+zero; the model result is exactly numeric zero and its local error is zero. For
+`M > 0`, the model assumes common-exponent alignment changes a term by less than
+one grid quantum `q <= eps M`, with at least one maximal-exponent term
+unchanged. At most `b` alignments incur loss; aligned terms are summed with
 adequate carry width, and a final finite FP32 normalization has error at most
 `eps abs(aligned_sum)`. Blocks consume all products exactly once, with no
 unaccounted arithmetic stages or overflow.
