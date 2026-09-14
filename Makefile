@@ -2,17 +2,24 @@ SHELL := /bin/bash
 ROOT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 override BUILD_DIR := $(ROOT_DIR)/build
 NVCC ?= nvcc
+CXX ?= g++
 COMMON_FLAGS := -std=c++17 -O2 -lineinfo -I$(ROOT_DIR)/include -Xcompiler=-Wall,-Wextra
 SM70_FLAGS := -DKITTENS_SM70 -gencode arch=compute_70,code=sm_70
 SM75_FLAGS := -DKITTENS_SM75 -gencode arch=compute_75,code=sm_75
 PTX_MMA_FLAGS := -DKITTENS_MMA_PTX
 
-.PHONY: all check-arch check-codegen build-mma-sm70 build-mma-sm75 test-mma-sm75 build-sm70 build-sm75 test-sm75 sanitize-sm75 build-ptx-sm70 build-ptx-sm75 test-ptx-sm75 sanitize-ptx-sm75 build-bench-sm75 bench-sm75 build-bench-ptx-sm75 bench-ptx-sm75 build-layout-sm70 build-layout-sm75 test-layout-sm75 build-ldmatrix-sm75 test-ldmatrix-sm75 build-ptx-mma-sm70 build-ptx-mma-sm75 test-ptx-mma-sm75 sanitize-ptx-mma-sm75 build-differential-sm70 build-differential-sm75 build-differential-ptx-sm70 build-differential-ptx-sm75 test-differential-sm75 test-differential-ptx-sm75 sanitize-differential-sm75 sanitize-differential-ptx-sm75 clean
+.PHONY: all check-numerical-bounds check-arch check-codegen build-mma-sm70 build-mma-sm75 test-mma-sm75 build-sm70 build-sm75 test-sm75 sanitize-sm75 build-ptx-sm70 build-ptx-sm75 test-ptx-sm75 sanitize-ptx-sm75 build-bench-sm75 bench-sm75 build-bench-ptx-sm75 bench-ptx-sm75 build-layout-sm70 build-layout-sm75 test-layout-sm75 build-ldmatrix-sm75 test-ldmatrix-sm75 build-ptx-mma-sm70 build-ptx-mma-sm75 test-ptx-mma-sm75 sanitize-ptx-mma-sm75 build-differential-sm70 build-differential-sm75 build-differential-ptx-sm70 build-differential-ptx-sm75 test-differential-sm75 test-differential-ptx-sm75 sanitize-differential-sm75 sanitize-differential-ptx-sm75 clean
 
-all: check-arch check-codegen build-mma-sm70 build-mma-sm75 build-layout-sm70 build-layout-sm75 build-ldmatrix-sm75 build-ptx-mma-sm70 build-ptx-mma-sm75 build-sm70 build-sm75 build-ptx-sm70 build-ptx-sm75 build-differential-sm70 build-differential-sm75 build-differential-ptx-sm70 build-differential-ptx-sm75
+all: check-numerical-bounds check-arch check-codegen build-mma-sm70 build-mma-sm75 build-layout-sm70 build-layout-sm75 build-ldmatrix-sm75 build-ptx-mma-sm70 build-ptx-mma-sm75 build-sm70 build-sm75 build-ptx-sm70 build-ptx-sm75 build-differential-sm70 build-differential-sm75 build-differential-ptx-sm70 build-differential-ptx-sm75
 
 $(BUILD_DIR):
 	mkdir -p "$(BUILD_DIR)"
+
+$(BUILD_DIR)/numerical-bounds: tests/numerical_bounds.cpp tests/numerical_bounds.hpp | $(BUILD_DIR)
+	$(CXX) -std=c++17 -O2 -Wall -Wextra -pedantic tests/numerical_bounds.cpp -o $@
+
+check-numerical-bounds: $(BUILD_DIR)/numerical-bounds
+	"$(BUILD_DIR)/numerical-bounds"
 
 check-arch:
 	NVCC="$(NVCC)" BUILD_DIR="$(BUILD_DIR)" bash tests/check_arch_contract.sh
