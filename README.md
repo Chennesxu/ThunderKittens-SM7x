@@ -48,10 +48,11 @@ make bench-ptx-sm75
 The SM70 PTX target is compile- and codegen-checked only; opting in does not
 change its experimental status or expand the supported architecture set.
 
-The differential GEMM driver runs six exact-domain cases and eight
-full-mantissa normal-FP16 model-domain cases with the WMMA, PTX m8, and (on
-SM75) PTX m16 backends. On SM75 it also compares the selected production GEMM
-path on the same allocations:
+The differential GEMM driver runs six exact-domain cases and ten model-domain
+cases: full-mantissa normal-FP16 inputs, including mixed normal exponents, plus
+the declared zero cases. It compares the WMMA, PTX m8, and (on SM75) PTX m16
+backends. On SM75 it also compares the selected production GEMM path on the
+same allocations:
 
 ```text
 make build-differential-sm70 build-differential-sm75
@@ -60,7 +61,8 @@ make test-differential-sm75 test-differential-ptx-sm75
 make sanitize-differential-sm75 sanitize-differential-ptx-sm75
 ```
 
-The exact cases use FP16 values q/8 for integer |q| <= 8 and K <= 1024.
+The exact cases use finite FP16 values q/8 for integer |q| <= 8 and positive,
+16-aligned K <= 1024.
 Products are exact multiples of 1/64 and the bounded partial sums remain exactly
 representable in FP32, which justifies zero-tolerance comparisons for those
 fixtures, including direct backend pairs and row-padding sentinels. The general

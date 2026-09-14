@@ -169,6 +169,50 @@ ptx_x2="$boundary_start"'ldmatrix[.]sync[.]aligned[.]m8n8[.]x2[.]shared[.]b16'"$
 ptx_x1="$boundary_start"'ldmatrix[.]sync[.]aligned[.]m8n8[.]x1[.]shared[.]b16'"$boundary_end"
 ptx_x2_trans="$boundary_start"'ldmatrix[.]sync[.]aligned[.]m8n8[.]x2[.]trans[.]shared[.]b16'"$boundary_end"
 ptx_x1_trans="$boundary_start"'ldmatrix[.]sync[.]aligned[.]m8n8[.]x1[.]trans[.]shared[.]b16'"$boundary_end"
+forbidden_differential_ptx='cp[.]async|mbarrier|wgmma|tcgen05|tensormap|stmatrix|multimem|m16n8k16'
+forbidden_differential_sass="$boundary_start"'(LDGSTS|HGMMA|BGMMA|IGMMA|QGMMA|WARPGROUP|WARPGROUPSET|UTMALDG|UTMASTG|UBLKCP|STSM)([.]|[^A-Za-z0-9_]|$)'
+
+verify_differential_hmma_counts() {
+    local label=$1
+    local wmma_expected=$2
+    require_kernel_opcode "$build_dir/differential-$label.sass" differential_wmma \
+        "$any_hmma" "$wmma_expected"
+    require_kernel_opcode "$build_dir/differential-$label.sass" differential_m8 \
+        "$any_hmma" 16
+    if [[ "$label" == sm75 ]]; then
+        require_kernel_opcode "$build_dir/differential-$label.sass" differential_m16 \
+            "$any_hmma" 4
+    fi
+}
+
+exercise_differential_forbidden_isa_rejection() {
+    local label=$1
+    local ptx_probe="$build_dir/differential-$label.ptx.forbidden.probe"
+    local sass_probe="$build_dir/differential-$label.sass.forbidden.probe"
+    local sass_control="$build_dir/differential-$label.sass.boundary.probe"
+    cp "$build_dir/differential-$label.ptx" "$ptx_probe"
+    cp "$build_dir/differential-$label.sass" "$sass_probe"
+    cp "$build_dir/differential-$label.sass" "$sass_control"
+    printf '\ncp.async.ca.shared.global [%%r1], [%%rd1], 16;\n' >>"$ptx_probe"
+    printf '\n/*0000*/ LDGSTS.128 RZ, [RZ];\n' >>"$sass_probe"
+    printf '\n/*0000*/ XLDGSTS.128 RZ, [RZ];\n' >>"$sass_control"
+    if (reject_pattern "$ptx_probe" "$forbidden_differential_ptx" \
+        "injected differential PTX instruction") >/dev/null 2>&1; then
+        echo "differential PTX blacklist accepted injected artifact: $label" >&2
+        exit 1
+    fi
+    if (reject_pattern "$sass_probe" "$forbidden_differential_sass" \
+        "injected differential SASS instruction") >/dev/null 2>&1; then
+        echo "differential SASS blacklist accepted injected artifact: $label" >&2
+        exit 1
+    fi
+    if ! (reject_pattern "$sass_control" "$forbidden_differential_sass" \
+        "boundary control differential SASS instruction") >/dev/null 2>&1; then
+        echo "differential SASS blacklist rejected a prefixed control: $label" >&2
+        exit 1
+    fi
+    rm -f -- "$ptx_probe" "$sass_probe" "$sass_control"
+}
 
 require_kernel_opcode() {
     local sass=$1
@@ -319,6 +363,15 @@ compile_target gemm-ptx src/gemm.cu sm70 KITTENS_SM70 compute_70 sm_70 KITTENS_M
 compile_target gemm-ptx src/gemm.cu sm75 KITTENS_SM75 compute_75 sm_75 KITTENS_MMA_PTX
 compile_target differential tests/gemm_differential.cu sm70 KITTENS_SM70 compute_70 sm_70
 compile_target differential tests/gemm_differential.cu sm75 KITTENS_SM75 compute_75 sm_75
+verify_differential_hmma_counts sm70 16
+verify_differential_hmma_counts sm75 4
+for label in sm70 sm75; do
+    reject_pattern "$build_dir/differential-$label.ptx" "$forbidden_differential_ptx" \
+        "prohibited differential PTX instruction"
+    reject_pattern "$build_dir/differential-$label.sass" "$forbidden_differential_sass" \
+        "prohibited differential SASS instruction"
+    exercise_differential_forbidden_isa_rejection "$label"
+done
 expect_backend_mismatch sm70 KITTENS_SM70 sm_70
 expect_backend_mismatch sm75 KITTENS_SM75 sm_75
 expect_layout_reject sm70 KITTENS_SM70 sm_70

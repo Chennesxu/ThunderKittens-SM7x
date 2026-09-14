@@ -38,7 +38,8 @@ zero; the model result is exactly numeric zero and its local error is zero. For
 one grid quantum `q <= eps M`, with at least one maximal-exponent term
 unchanged. At most `b` alignments incur loss; aligned terms are summed with
 adequate carry width, and a final finite FP32 normalization has error at most
-`eps abs(aligned_sum)`. Blocks consume all products exactly once, with no
+`eps abs(aligned_sum)`, where `eps = 2^-23` is a full-ULP scale at one, not the
+round-to-nearest unit roundoff `2^-24`. Blocks consume all products exactly once, with no
 unaccounted arithmetic stages or overflow.
 
 This permits signed-floor or sign-magnitude alignment behavior. It does not
@@ -79,12 +80,17 @@ and is not based only on `abs(R_ij)`, so cancellation retains its product scale.
 The PTX ISA documents at-least-single-precision multiplication and accumulation
 but leaves accumulation order, rounding, and subnormal handling unspecified.
 The block-chain result is informed by standard gamma analysis, while the
-common-exponent alignment model is empirical. The latter paper studies the
+common-exponent alignment model is empirical. Valpey et al. study the
 four-product HMMA.884 family; applying the generalized block model to
 HMMA.1688 is an explicit assumption, not evidence that its internals are the
 same. Passing differential cases means only that the tested outputs satisfy this
 declared model under its assumptions. It is not an exhaustive hardware accuracy
 result, and it does not provide SM70 runtime evidence.
+
+The differential fixtures include a `K=1024` mixed-exponent case and a mixed
+zero/normal case whose consecutive four-term A blocks contain one zero A input
+(and therefore a zero product) and three normal A inputs. These combinations
+extend the exercised domain; they do not exhaust it.
 
 Primary sources:
 

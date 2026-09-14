@@ -37,6 +37,7 @@ enum class Pattern {
     rounded_positive,
     rounded_signed,
     rounded_mixed,
+    rounded_mixed_zeros,
     rounded_cancellation,
     rounded_zero,
 };
@@ -140,6 +141,68 @@ __half value_from_q(int q) { return __float2half(static_cast<float>(q) / 8.0f); 
 
 int signed_q(int row, int col, int seed) { return (row * 3 + col * 5 + seed) % 17 - 8; }
 
+bool valid_reduction_k(int k) { return k > 0 && k % 16 == 0 && k <= 1024; }
+
+bool is_exact_value(__half value) {
+    const float logical = __half2float(value);
+    return std::isfinite(logical) && std::fabs(logical) <= 1.0f &&
+           std::trunc(8.0f * logical) == 8.0f * logical;
+}
+
+bool validate_exact_domain(const GemmCase& test_case, const std::vector<__half>& a,
+                           const std::vector<__half>& b, bool report) {
+    for (int row = 0; row < test_case.m; ++row) {
+        for (int col = 0; col < test_case.k; ++col) {
+            if (!is_exact_value(a[static_cast<std::size_t>(row) * test_case.lda + col])) {
+                if (report) std::fprintf(stderr, "%s invalid exact A input row=%d col=%d\n", test_case.name, row, col);
+                return false;
+            }
+        }
+    }
+    for (int row = 0; row < test_case.k; ++row) {
+        for (int col = 0; col < test_case.n; ++col) {
+            if (!is_exact_value(b[static_cast<std::size_t>(row) * test_case.ldb + col])) {
+                if (report) std::fprintf(stderr, "%s invalid exact B input row=%d col=%d\n", test_case.name, row, col);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool run_exact_domain_self_checks() {
+    const GemmCase test_case = {"exact-domain-self-check", 1, 1, 16, 16, 1, 1, Pattern::identity};
+    std::vector<__half> a(16, value_from_q(8));
+    std::vector<__half> b(16, value_from_q(-8));
+    if (!valid_reduction_k(16) || valid_reduction_k(0) || valid_reduction_k(18) ||
+        valid_reduction_k(2048) || !validate_exact_domain(test_case, a, b, false)) {
+        std::fprintf(stderr, "exact-domain self-check rejected a valid fixture\n");
+        return false;
+    }
+    a[0] = value_from_q(9);
+    if (validate_exact_domain(test_case, a, b, false)) {
+        std::fprintf(stderr, "exact-domain self-check accepted q outside [-8,8]\n");
+        return false;
+    }
+    a[0] = __float2half(0.3f);
+    if (validate_exact_domain(test_case, a, b, false)) {
+        std::fprintf(stderr, "exact-domain self-check accepted a value off the q/8 lattice\n");
+        return false;
+    }
+    a[0] = __float2half(std::numeric_limits<float>::infinity());
+    if (validate_exact_domain(test_case, a, b, false)) {
+        std::fprintf(stderr, "exact-domain self-check accepted a nonfinite value\n");
+        return false;
+    }
+    a[0] = value_from_q(8);
+    b[0] = value_from_q(-9);
+    if (validate_exact_domain(test_case, a, b, false)) {
+        std::fprintf(stderr, "exact-domain self-check accepted an invalid B value\n");
+        return false;
+    }
+    return true;
+}
+
 std::uint32_t fingerprint(int row, int col, std::uint32_t seed) {
     std::uint32_t value = static_cast<std::uint32_t>(row) * 0x9e3779b9u ^
                           static_cast<std::uint32_t>(col) * 0x85ebca6bu ^ seed;
@@ -151,9 +214,11 @@ std::uint32_t fingerprint(int row, int col, std::uint32_t seed) {
 }
 
 __half rounded_value(std::uint32_t hash, Pattern pattern, bool negate) {
-    const int exponent = pattern == Pattern::rounded_mixed ? static_cast<int>((hash >> 10) % 7) - 3 : 0;
+    const int exponent = (pattern == Pattern::rounded_mixed || pattern == Pattern::rounded_mixed_zeros)
+        ? static_cast<int>((hash >> 10) % 7) - 3 : 0;
     float value = std::ldexp(1.0f + static_cast<float>(hash & 1023u) / 1024.0f, exponent);
-    if (negate || ((pattern == Pattern::rounded_signed || pattern == Pattern::rounded_mixed) && (hash >> 31))) {
+    if (negate || ((pattern == Pattern::rounded_signed || pattern == Pattern::rounded_mixed ||
+                    pattern == Pattern::rounded_mixed_zeros) && (hash >> 31))) {
         value = -value;
     }
     return __float2half(value);
@@ -161,7 +226,8 @@ __half rounded_value(std::uint32_t hash, Pattern pattern, bool negate) {
 
 bool is_model_pattern(Pattern pattern) {
     return pattern == Pattern::rounded_positive || pattern == Pattern::rounded_signed ||
-           pattern == Pattern::rounded_mixed || pattern == Pattern::rounded_cancellation ||
+           pattern == Pattern::rounded_mixed || pattern == Pattern::rounded_mixed_zeros ||
+           pattern == Pattern::rounded_cancellation ||
            pattern == Pattern::rounded_zero;
 }
 
@@ -176,10 +242,6 @@ bool is_model_value(__half value) {
 
 bool validate_model_domain(const GemmCase& test_case, const std::vector<__half>& a,
                            const std::vector<__half>& b) {
-    if (test_case.k <= 0 || test_case.k % 16 != 0 || test_case.k > 1024) {
-        std::fprintf(stderr, "%s invalid model K=%d\n", test_case.name, test_case.k);
-        return false;
-    }
     for (int row = 0; row < test_case.m; ++row) {
         for (int col = 0; col < test_case.k; ++col) {
             if (!is_model_value(a[static_cast<std::size_t>(row) * test_case.lda + col])) {
@@ -199,6 +261,13 @@ bool validate_model_domain(const GemmCase& test_case, const std::vector<__half>&
     return true;
 }
 
+bool validate_reduction_domain(const GemmCase& test_case, ComparisonMode comparison) {
+    if (valid_reduction_k(test_case.k)) return true;
+    std::fprintf(stderr, "%s invalid %s K=%d\n", test_case.name,
+                 comparison == ComparisonMode::exact ? "exact" : "model", test_case.k);
+    return false;
+}
+
 void fill_inputs(const GemmCase& test_case, std::vector<__half>* a, std::vector<__half>* b) {
     std::fill(a->begin(), a->end(), value_from_q(7));
     std::fill(b->begin(), b->end(), value_from_q(7));
@@ -209,6 +278,7 @@ void fill_inputs(const GemmCase& test_case, std::vector<__half>* a, std::vector<
                 const bool negate = test_case.pattern == Pattern::rounded_cancellation && col >= test_case.k / 2;
                 (*a)[static_cast<std::size_t>(row) * test_case.lda + col] =
                     test_case.pattern == Pattern::rounded_zero ? __float2half(0.0f) :
+                    (test_case.pattern == Pattern::rounded_mixed_zeros && col % 4 == 0) ? __float2half(0.0f) :
                     rounded_value(fingerprint(row, coordinate, 17u), test_case.pattern, negate);
             }
         }
@@ -237,6 +307,74 @@ void fill_inputs(const GemmCase& test_case, std::vector<__half>* a, std::vector<
             (*b)[static_cast<std::size_t>(row) * test_case.ldb + col] = value_from_q(q);
         }
     }
+}
+
+int binary16_exponent(__half value) {
+    std::uint16_t encoded = 0;
+    std::memcpy(&encoded, &value, sizeof(encoded));
+    return static_cast<int>((encoded >> 10) & 0x1fu) - 15;
+}
+
+bool check_model_fixture_coverage(const GemmCase& test_case, const std::vector<__half>& a,
+                                  const std::vector<__half>& b) {
+    if (test_case.pattern == Pattern::rounded_mixed && test_case.k == 1024) {
+        int min_exponent = 0;
+        int max_exponent = 0;
+        bool saw_normal = false;
+        const auto observe = [&](const __half value) {
+            if (__half2float(value) == 0.0f) return;
+            const int exponent = binary16_exponent(value);
+            min_exponent = saw_normal ? std::min(min_exponent, exponent) : exponent;
+            max_exponent = saw_normal ? std::max(max_exponent, exponent) : exponent;
+            saw_normal = true;
+        };
+        for (int row = 0; row < test_case.m; ++row) {
+            for (int col = 0; col < test_case.k; ++col) observe(a[static_cast<std::size_t>(row) * test_case.lda + col]);
+        }
+        for (int row = 0; row < test_case.k; ++row) {
+            for (int col = 0; col < test_case.n; ++col) observe(b[static_cast<std::size_t>(row) * test_case.ldb + col]);
+        }
+        std::printf("%s K=%d exponent-range=[%d,%d]\n", test_case.name, test_case.k, min_exponent, max_exponent);
+        if (!saw_normal || min_exponent > -3 || max_exponent < 3) {
+            std::fprintf(stderr, "%s lacks mixed exponent coverage\n", test_case.name);
+            return false;
+        }
+    }
+    if (test_case.pattern == Pattern::rounded_mixed_zeros) {
+        std::size_t zeros = 0;
+        std::size_t normals = 0;
+        std::size_t b_normals = 0;
+        for (int row = 0; row < test_case.m; ++row) {
+            for (int k0 = 0; k0 < test_case.k; k0 += 4) {
+                for (int offset = 0; offset < 4; ++offset) {
+                    const __half value = a[static_cast<std::size_t>(row) * test_case.lda + k0 + offset];
+                    const bool zero = __half2float(value) == 0.0f;
+                    zeros += zero;
+                    normals += !zero;
+                    if (zero != (offset == 0)) {
+                        std::fprintf(stderr, "%s invalid zero/normal block row=%d k=%d\n", test_case.name, row, k0 + offset);
+                        return false;
+                    }
+                }
+            }
+        }
+        for (int row = 0; row < test_case.k; ++row) {
+            for (int col = 0; col < test_case.n; ++col) {
+                if (__half2float(b[static_cast<std::size_t>(row) * test_case.ldb + col]) == 0.0f) {
+                    std::fprintf(stderr, "%s has a zero B input row=%d col=%d\n", test_case.name, row, col);
+                    return false;
+                }
+                ++b_normals;
+            }
+        }
+        std::printf("%s A zeros=%zu normals=%zu B normals=%zu four-term-blocks=%d\n", test_case.name,
+                    zeros, normals, b_normals, test_case.m * (test_case.k / 4));
+        if (zeros == 0 || normals == 0 || b_normals == 0) {
+            std::fprintf(stderr, "%s lacks zero/normal coverage\n", test_case.name);
+            return false;
+        }
+    }
+    return true;
 }
 
 std::vector<ReferenceCell> make_reference(const GemmCase& test_case,
@@ -429,12 +567,15 @@ bool check_cpu(const GemmCase& test_case, const char* name,
 }
 
 bool run_case(const GemmCase& test_case, cudaStream_t stream, ComparisonMode comparison) {
+    if (!validate_reduction_domain(test_case, comparison)) return false;
     std::vector<__half> a(static_cast<std::size_t>(test_case.m) * test_case.lda);
     std::vector<__half> b(static_cast<std::size_t>(test_case.k) * test_case.ldb);
     std::vector<float> outputs[kOutputCount];
     for (std::vector<float>& output : outputs) output.assign(static_cast<std::size_t>(test_case.m) * test_case.ldc, sentinel());
     fill_inputs(test_case, &a, &b);
+    if (comparison == ComparisonMode::exact && !validate_exact_domain(test_case, a, b, true)) return false;
     if (comparison == ComparisonMode::model && !validate_model_domain(test_case, a, b)) return false;
+    if (comparison == ComparisonMode::model && !check_model_fixture_coverage(test_case, a, b)) return false;
     const std::vector<ReferenceCell> reference = make_reference(test_case, a, b, comparison);
     if (comparison == ComparisonMode::model && !check_double_reference_requirement(test_case, reference)) return false;
     __half* device_a = nullptr;
@@ -501,6 +642,7 @@ bool run_case(const GemmCase& test_case, cudaStream_t stream, ComparisonMode com
 }  // namespace
 
 int main() {
+    if (!run_exact_domain_self_checks()) return EXIT_FAILURE;
     int device = -1;
     const int selection = tk_sm7x::test::select_sm75_device(&device);
     if (selection != EXIT_SUCCESS) return selection;
@@ -521,6 +663,8 @@ int main() {
         {"rounded-positive-long", 16, 16, 1024, 1032, 24, 20, Pattern::rounded_positive},
         {"rounded-signed", 32, 48, 256, 264, 56, 52, Pattern::rounded_signed},
         {"rounded-mixed", 32, 48, 256, 264, 56, 52, Pattern::rounded_mixed},
+        {"rounded-mixed-long", 32, 48, 1024, 1032, 56, 52, Pattern::rounded_mixed},
+        {"rounded-mixed-zeros", 32, 48, 256, 264, 56, 52, Pattern::rounded_mixed_zeros},
         {"rounded-cancellation", 16, 32, 1024, 1032, 40, 36, Pattern::rounded_cancellation},
         {"rounded-zero", 16, 16, 32, 40, 24, 20, Pattern::rounded_zero},
         {"rounded-production-small", 256, 384, 64, 72, 392, 388, Pattern::rounded_mixed},

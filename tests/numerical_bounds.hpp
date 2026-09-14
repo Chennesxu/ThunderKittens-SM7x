@@ -5,6 +5,7 @@
 
 namespace tk_sm7x::test::numerical {
 
+// Returns quiet NaN for invalid reduction metadata or a nonfinite scale.
 inline double error_bound(int k, double sum_abs) {
   if (k <= 0 || k % 16 != 0 || k > 1024 || sum_abs < 0.0 ||
       !std::isfinite(sum_abs)) {
