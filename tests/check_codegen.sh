@@ -169,50 +169,52 @@ ptx_x2="$boundary_start"'ldmatrix[.]sync[.]aligned[.]m8n8[.]x2[.]shared[.]b16'"$
 ptx_x1="$boundary_start"'ldmatrix[.]sync[.]aligned[.]m8n8[.]x1[.]shared[.]b16'"$boundary_end"
 ptx_x2_trans="$boundary_start"'ldmatrix[.]sync[.]aligned[.]m8n8[.]x2[.]trans[.]shared[.]b16'"$boundary_end"
 ptx_x1_trans="$boundary_start"'ldmatrix[.]sync[.]aligned[.]m8n8[.]x1[.]trans[.]shared[.]b16'"$boundary_end"
-forbidden_differential_ptx="$boundary_start"'(cp[.]async|mbarrier|wgmma|tcgen05|tensormap|stmatrix|multimem)([.]|[^A-Za-z0-9_]|$)|'"$boundary_start"'mma[.]sync[.]aligned[.]m16n8k16[.]'
-forbidden_differential_sass="$boundary_start"'(LDGSTS|HGMMA|BGMMA|IGMMA|QGMMA|WARPGROUP|WARPGROUPSET|UTMALDG|UTMASTG|UBLKCP|STSM)([.]|[^A-Za-z0-9_]|$)'
+ptx_shfl="$boundary_start"'shfl[.]sync[.]'
+forbidden_ptx="$boundary_start"'(cp[.]async|mbarrier|wgmma|tcgen05|tensormap|stmatrix|multimem)([.]|[^A-Za-z0-9_]|$)|'"$boundary_start"'mma[.]sync[.]aligned[.]m16n8k16[.]'
+forbidden_sass="$boundary_start"'(LDGSTS|HGMMA|BGMMA|IGMMA|QGMMA|WARPGROUP|WARPGROUPSET|UTMALDG|UTMASTG|UBLKCP|STSM)([.]|[^A-Za-z0-9_]|$)'
 
-exercise_differential_forbidden_isa_rejection() {
-    local label=$1
-    local ptx_probe="$build_dir/differential-$label.ptx.forbidden.probe"
-    local ptx_m16_probe="$build_dir/differential-$label.ptx.m16n8k16.probe"
-    local ptx_control="$build_dir/differential-$label.ptx.boundary.probe"
-    local sass_probe="$build_dir/differential-$label.sass.forbidden.probe"
-    local sass_control="$build_dir/differential-$label.sass.boundary.probe"
-    cp "$build_dir/differential-$label.ptx" "$ptx_probe"
-    cp "$build_dir/differential-$label.ptx" "$ptx_m16_probe"
-    cp "$build_dir/differential-$label.ptx" "$ptx_control"
-    cp "$build_dir/differential-$label.sass" "$sass_probe"
-    cp "$build_dir/differential-$label.sass" "$sass_control"
+exercise_forbidden_isa_rejection() {
+    local prefix=$1
+    local label=$2
+    local ptx_probe="$build_dir/$prefix-$label.ptx.forbidden.probe"
+    local ptx_m16_probe="$build_dir/$prefix-$label.ptx.m16n8k16.probe"
+    local ptx_control="$build_dir/$prefix-$label.ptx.boundary.probe"
+    local sass_probe="$build_dir/$prefix-$label.sass.forbidden.probe"
+    local sass_control="$build_dir/$prefix-$label.sass.boundary.probe"
+    cp "$build_dir/$prefix-$label.ptx" "$ptx_probe"
+    cp "$build_dir/$prefix-$label.ptx" "$ptx_m16_probe"
+    cp "$build_dir/$prefix-$label.ptx" "$ptx_control"
+    cp "$build_dir/$prefix-$label.sass" "$sass_probe"
+    cp "$build_dir/$prefix-$label.sass" "$sass_control"
     printf '\ncp.async.ca.shared.global [%%r1], [%%rd1], 16;\n' >>"$ptx_probe"
     printf '\nmma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32;\n' >>"$ptx_m16_probe"
     printf '\nxcp.async.ca.shared.global [%%r1], [%%rd1], 16;\n' >>"$ptx_control"
     printf '\nmma.sync.aligned.m16n8k16x.row.col.f32.f16.f16.f32;\n' >>"$ptx_control"
     printf '\n/*0000*/ LDGSTS.128 RZ, [RZ];\n' >>"$sass_probe"
     printf '\n/*0000*/ XLDGSTS.128 RZ, [RZ];\n' >>"$sass_control"
-    if (reject_pattern "$ptx_probe" "$forbidden_differential_ptx" \
+    if (reject_pattern "$ptx_probe" "$forbidden_ptx" \
         "injected differential PTX instruction") >/dev/null 2>&1; then
-        echo "differential PTX blacklist accepted injected artifact: $label" >&2
+        echo "differential PTX blacklist accepted injected artifact: $prefix-$label" >&2
         exit 1
     fi
-    if (reject_pattern "$ptx_m16_probe" "$forbidden_differential_ptx" \
+    if (reject_pattern "$ptx_m16_probe" "$forbidden_ptx" \
         "injected differential PTX m16n8k16 instruction") >/dev/null 2>&1; then
-        echo "differential PTX blacklist accepted injected m16n8k16 artifact: $label" >&2
+        echo "differential PTX blacklist accepted injected m16n8k16 artifact: $prefix-$label" >&2
         exit 1
     fi
-    if ! (reject_pattern "$ptx_control" "$forbidden_differential_ptx" \
+    if ! (reject_pattern "$ptx_control" "$forbidden_ptx" \
         "fixed differential PTX boundary control") >/dev/null 2>&1; then
-        echo "differential PTX blacklist rejected a boundary control: $label" >&2
+        echo "differential PTX blacklist rejected a boundary control: $prefix-$label" >&2
         exit 1
     fi
-    if (reject_pattern "$sass_probe" "$forbidden_differential_sass" \
+    if (reject_pattern "$sass_probe" "$forbidden_sass" \
         "injected differential SASS instruction") >/dev/null 2>&1; then
-        echo "differential SASS blacklist accepted injected artifact: $label" >&2
+        echo "differential SASS blacklist accepted injected artifact: $prefix-$label" >&2
         exit 1
     fi
-    if ! (reject_pattern "$sass_control" "$forbidden_differential_sass" \
+    if ! (reject_pattern "$sass_control" "$forbidden_sass" \
         "boundary control differential SASS instruction") >/dev/null 2>&1; then
-        echo "differential SASS blacklist rejected a prefixed control: $label" >&2
+        echo "differential SASS blacklist rejected a prefixed control: $prefix-$label" >&2
         exit 1
     fi
     rm -f -- "$ptx_probe" "$ptx_m16_probe" "$ptx_control" "$sass_probe" "$sass_control"
@@ -367,12 +369,16 @@ compile_target gemm-ptx src/gemm.cu sm70 KITTENS_SM70 compute_70 sm_70 KITTENS_M
 compile_target gemm-ptx src/gemm.cu sm75 KITTENS_SM75 compute_75 sm_75 KITTENS_MMA_PTX
 compile_target differential tests/gemm_differential.cu sm70 KITTENS_SM70 compute_70 sm_70
 compile_target differential tests/gemm_differential.cu sm75 KITTENS_SM75 compute_75 sm_75
-for label in sm70 sm75; do
-    reject_pattern "$build_dir/differential-$label.ptx" "$forbidden_differential_ptx" \
-        "prohibited differential PTX instruction"
-    reject_pattern "$build_dir/differential-$label.sass" "$forbidden_differential_sass" \
-        "prohibited differential SASS instruction"
-    exercise_differential_forbidden_isa_rejection "$label"
+compile_target row-reduce tests/row_reduce.cu sm70 KITTENS_SM70 compute_70 sm_70
+compile_target row-reduce tests/row_reduce.cu sm75 KITTENS_SM75 compute_75 sm_75
+for prefix in differential row-reduce; do
+    for label in sm70 sm75; do
+        reject_pattern "$build_dir/$prefix-$label.ptx" "$forbidden_ptx" \
+            "prohibited $prefix PTX instruction"
+        reject_pattern "$build_dir/$prefix-$label.sass" "$forbidden_sass" \
+            "prohibited $prefix SASS instruction"
+        exercise_forbidden_isa_rejection "$prefix" "$label"
+    done
 done
 expect_backend_mismatch sm70 KITTENS_SM70 sm_70
 expect_backend_mismatch sm75 KITTENS_SM75 sm_75
@@ -380,7 +386,7 @@ expect_layout_reject sm70 KITTENS_SM70 sm_70
 expect_layout_reject sm75 KITTENS_SM75 sm_75
 expect_ptx_backend_capability
 
-for prefix in ldmatrix ptx-backend mma gemm gemm-ptx differential; do
+for prefix in ldmatrix ptx-backend mma gemm gemm-ptx differential row-reduce; do
     if [[ "$prefix" == ldmatrix ]]; then
         require_pattern "$build_dir/$prefix-sm75.ptx" '\.target[[:space:]]+sm_75' \
             "sm_75 target"
@@ -662,6 +668,51 @@ require_kernel_opcode "$build_dir/differential-sm75.sass" differential_m16 \
 require_kernel_opcode "$build_dir/differential-sm75.sass" differential_m16 "$any_hmma" 4
 require_kernel_opcode "$build_dir/differential-sm75.sass" differential_m16 "$any_ffma" 0
 require_kernel_opcode "$build_dir/differential-sm75.sass" differential_m16 \
+    "$boundary_start"'LDSM[.]' 6
+
+for label in sm70 sm75; do
+    require_ptx_kernel_opcode "$build_dir/row-reduce-$label.ptx" row_reduce_wmma 'wmma[.]' 4
+    require_ptx_kernel_opcode "$build_dir/row-reduce-$label.ptx" row_reduce_wmma "$ptx_m8" 0
+    require_ptx_kernel_opcode "$build_dir/row-reduce-$label.ptx" row_reduce_wmma "$ptx_m16" 0
+    # An opaque fragment layout leaves the shared-memory round trip as the only
+    # reduction path, so the WMMA kernel must reach for no register exchange at all
+    # while each PTX kernel issues exactly the exchanges its layout needs.
+    require_ptx_kernel_opcode "$build_dir/row-reduce-$label.ptx" row_reduce_wmma "$ptx_shfl" 0
+    require_kernel_opcode "$build_dir/row-reduce-$label.sass" row_reduce_wmma "$any_ffma" 0
+    require_ptx_kernel_opcode "$build_dir/row-reduce-$label.ptx" row_reduce_m8 "$ptx_m8" 4
+    require_ptx_kernel_opcode "$build_dir/row-reduce-$label.ptx" row_reduce_m8 "$ptx_m16" 0
+    require_ptx_kernel_opcode "$build_dir/row-reduce-$label.ptx" row_reduce_m8 'wmma[.]' 0
+    require_ptx_kernel_opcode "$build_dir/row-reduce-$label.ptx" row_reduce_m8 'ldmatrix' 0
+    require_ptx_kernel_opcode "$build_dir/row-reduce-$label.ptx" row_reduce_m8 "$ptx_shfl" 12
+    for step in STEP0 STEP1 STEP2 STEP3; do
+        require_kernel_opcode "$build_dir/row-reduce-$label.sass" row_reduce_m8 \
+            "$boundary_start"'HMMA[.]884[.]F32[.]F32[.]'"$step""$boundary_end" 4
+    done
+    require_kernel_opcode "$build_dir/row-reduce-$label.sass" row_reduce_m8 "$any_hmma" 16
+    require_kernel_opcode "$build_dir/row-reduce-$label.sass" row_reduce_m8 "$any_ffma" 0
+    require_kernel_opcode "$build_dir/row-reduce-$label.sass" row_reduce_m8 \
+        "$boundary_start"'LDSM[.]' 0
+done
+
+require_kernel_opcode "$build_dir/row-reduce-sm70.sass" row_reduce_wmma "$any_hmma" 16
+require_kernel_opcode "$build_dir/row-reduce-sm75.sass" row_reduce_wmma "$any_hmma" 4
+reject_pattern "$build_dir/row-reduce-sm70.ptx" 'ldmatrix|m16n8k8|m16n8k16' \
+    "SM75+ row reduce instruction"
+reject_pattern "$build_dir/row-reduce-sm70.sass" 'HMMA[.]1688|LDSM' \
+    "SM75+ row reduce SASS"
+require_ptx_kernel_opcode "$build_dir/row-reduce-sm75.ptx" row_reduce_m16 "$ptx_m16" 4
+require_ptx_kernel_opcode "$build_dir/row-reduce-sm75.ptx" row_reduce_m16 "$ptx_m8" 0
+require_ptx_kernel_opcode "$build_dir/row-reduce-sm75.ptx" row_reduce_m16 'wmma[.]' 0
+require_ptx_kernel_opcode "$build_dir/row-reduce-sm75.ptx" row_reduce_m16 "$ptx_x2" 2
+require_ptx_kernel_opcode "$build_dir/row-reduce-sm75.ptx" row_reduce_m16 "$ptx_x1" 4
+require_ptx_kernel_opcode "$build_dir/row-reduce-sm75.ptx" row_reduce_m16 \
+    'ldmatrix[.].*[.]trans' 0
+require_ptx_kernel_opcode "$build_dir/row-reduce-sm75.ptx" row_reduce_m16 "$ptx_shfl" 16
+require_kernel_opcode "$build_dir/row-reduce-sm75.sass" row_reduce_m16 \
+    "$boundary_start"'HMMA[.]1688[.]F32'"$boundary_end" 4
+require_kernel_opcode "$build_dir/row-reduce-sm75.sass" row_reduce_m16 "$any_hmma" 4
+require_kernel_opcode "$build_dir/row-reduce-sm75.sass" row_reduce_m16 "$any_ffma" 0
+require_kernel_opcode "$build_dir/row-reduce-sm75.sass" row_reduce_m16 \
     "$boundary_start"'LDSM[.]' 6
 
 echo "codegen gate: PASS"

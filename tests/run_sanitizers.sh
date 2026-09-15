@@ -44,6 +44,12 @@ case "$selector" in
         memcheck_api=(--report-api-errors no)
         pass_message="PTX differential GEMM SM75 sanitizers: PASS"
         ;;
+    row-reduce)
+        sanitizer_test="$build_dir/row-reduce-sm75"
+        build_hint=build-row-reduce-sm75
+        memcheck_api=(--report-api-errors no)
+        pass_message="Row reduce SM75 sanitizers: PASS"
+        ;;
     *)
         echo "unknown sanitizer selector: $selector" >&2
         exit 2

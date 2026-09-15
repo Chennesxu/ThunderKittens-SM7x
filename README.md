@@ -73,6 +73,24 @@ This is not a universal NVIDIA accuracy guarantee: the HMMA.1688 extension is
 an assumption, arbitrary FP16 inputs are outside the declared domain, and it
 does not establish SM70 runtime correctness.
 
+The inline-PTX backends also expose a register-resident row reduction. Because
+`nvcuda::wmma::fragment` leaves its lane-to-matrix mapping unspecified, the WMMA
+backend can only reduce a row by round-tripping the accumulator through shared
+memory; the PTX backends reduce through warp shuffles instead. Both paths combine
+the 16 column values as a balanced binary tree in column index order, so they
+agree exactly rather than within an error budget:
+
+```text
+make build-row-reduce-sm70 build-row-reduce-sm75
+make test-row-reduce-sm75
+make sanitize-row-reduce-sm75
+```
+
+The test compares each backend's register-resident result against the
+shared-memory reference and against a host evaluation of the declared order, all
+with zero tolerance, and additionally against an order-independent exact
+reference on the domain where every partial sum is exactly representable in FP32.
+
 - SM75 correctness and Compute Sanitizer checks pass on the identified Turing device.
 - Compile and codegen checks pass with CUDA 11.0.3 and the local CUDA 12.4 toolkit.
 - SM70 is compile-tested and remains experimental until it is run on Volta hardware.

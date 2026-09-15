@@ -12,6 +12,36 @@
 
 namespace tk_sm7x::detail {
 
+// Row reduction over the logical 16x16 accumulator: 16 floats, one per logical
+// row in row order, so the lane-to-row mapping stays inside the backend.
+// Warp-collective through __shfl_xor_sync with a full member mask, so all 32
+// lanes must reach it converged. Exactly one of the four lanes holding a row
+// stores it, and the caller synchronizes before another thread reads the
+// destination. Defined for finite accumulator values.
+//
+// The 16 column values combine as a balanced binary tree in column index order.
+// That fixes the result across backends even though FP32 addition is not
+// associative and the two layouts execute the stages in different sequences.
+// combine_ordered keeps the lower-column operand first in every lane, so a tie
+// cannot resolve differently per lane either.
+struct row_sum_op {
+    __host__ __device__ static __forceinline__ float apply(float low, float high) {
+        return low + high;
+    }
+};
+
+struct row_max_op {
+    __host__ __device__ static __forceinline__ float apply(float low, float high) {
+        return low > high ? low : high;
+    }
+};
+
+template <class Op>
+__device__ __forceinline__ float combine_ordered(float own, int mask, bool own_is_low) {
+    const float other = __shfl_xor_sync(0xffffffffu, own, mask);
+    return own_is_low ? Op::apply(own, other) : Op::apply(other, own);
+}
+
 template <class InstructionArch>
 struct ptx_warp_mma_f16_f16_f32_16x16x16 {
     static_assert(!std::is_same<InstructionArch, InstructionArch>::value,
@@ -55,6 +85,25 @@ private:
                     halves[half] = shared[k];
                 }
                 destination[kq][reg] = pack_halves(halves[0], halves[1]);
+            }
+        }
+    }
+
+    template <class Op>
+    __device__ static __forceinline__ void reduce_rows(
+        float* destination, const accumulator& source) {
+        const int lane = static_cast<int>(threadIdx.x) % 32;
+        const int mh = mma_m8n8k4::quadpair(lane) / 2;
+#pragma unroll
+        for (int slot = 0; slot < 2; ++slot) {
+            float low = Op::apply(source.value[2 * slot], source.value[2 * slot + 1]);
+            float high = Op::apply(source.value[2 * slot + 4], source.value[2 * slot + 5]);
+            low = combine_ordered<Op>(low, 2, (lane & 2) == 0);
+            high = combine_ordered<Op>(high, 2, (lane & 2) == 0);
+            const float row = combine_ordered<Op>(Op::apply(low, high), 4, (lane & 4) == 0);
+            const int local_row = (lane & 1) + 2 * slot + 4 * (lane / 16);
+            if ((lane & 6) == 0) {
+                destination[8 * mh + local_row] = row;
             }
         }
     }
@@ -114,6 +163,16 @@ public:
                 static_cast<std::size_t>(8 * nh + local_col);
             shared[offset] = source.value[i];
         }
+    }
+
+    __device__ static __forceinline__ void row_sum(
+        float* destination, const accumulator& source) {
+        reduce_rows<row_sum_op>(destination, source);
+    }
+
+    __device__ static __forceinline__ void row_max(
+        float* destination, const accumulator& source) {
+        reduce_rows<row_max_op>(destination, source);
     }
 };
 
@@ -206,6 +265,37 @@ struct ptx_warp_mma_f16_f16_f32_16x16x16<arch::sm75> {
                 shared[offset] = source.value[nh][reg];
             }
         }
+    }
+
+private:
+    template <class Op>
+    __device__ static __forceinline__ void reduce_rows(
+        float* destination, const accumulator& source) {
+        const int lane = static_cast<int>(threadIdx.x) % 32;
+#pragma unroll
+        for (int slot = 0; slot < 2; ++slot) {
+            float low = Op::apply(source.value[0][2 * slot], source.value[0][2 * slot + 1]);
+            float high = Op::apply(source.value[1][2 * slot], source.value[1][2 * slot + 1]);
+            low = combine_ordered<Op>(low, 1, (lane & 1) == 0);
+            high = combine_ordered<Op>(high, 1, (lane & 1) == 0);
+            low = combine_ordered<Op>(low, 2, (lane & 2) == 0);
+            high = combine_ordered<Op>(high, 2, (lane & 2) == 0);
+            if (lane % 4 == 0) {
+                destination[mma_m16n8k8::accumulator_row(lane, 2 * slot)] =
+                    Op::apply(low, high);
+            }
+        }
+    }
+
+public:
+    __device__ static __forceinline__ void row_sum(
+        float* destination, const accumulator& source) {
+        reduce_rows<row_sum_op>(destination, source);
+    }
+
+    __device__ static __forceinline__ void row_max(
+        float* destination, const accumulator& source) {
+        reduce_rows<row_max_op>(destination, source);
     }
 };
 #endif
