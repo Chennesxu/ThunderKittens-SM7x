@@ -285,12 +285,27 @@ bool check_exact(const char* label, const char* name, const std::vector<float>& 
     return true;
 }
 
-std::size_t rounded_rows(const std::vector<float>& actual, const std::vector<double>& reference) {
+std::size_t deviating_rows(const std::vector<float>& actual,
+                           const std::vector<double>& reference) {
     std::size_t count = 0;
     for (int row = 0; row < kTile; ++row) {
         count += static_cast<double>(actual[row]) != reference[row];
     }
     return count;
+}
+
+// Deviation from the ideal product sum would also count the rounding of the MMA
+// that produced the tile, so the coverage gate censuses the reduction's own
+// additions over the staged FP32 values instead.
+int tree_roundings(const std::vector<float>& tile) {
+    int inexact = 0;
+    for (int row = 0; row < kTile; ++row) {
+        tk_sm7x::test::rounding_census_combine census;
+        tk_sm7x::test::canonical_row_tree(census,
+                                          tile.data() + static_cast<std::size_t>(row) * kTile);
+        inexact += census.inexact;
+    }
+    return inexact;
 }
 
 struct Buffers {
@@ -421,10 +436,12 @@ bool run_backend(const Fixture& fixture, const Backend& backend, const __half* d
         }
     } else {
         const std::vector<float>& observed = register_path ? register_sum : shared_sum;
-        const std::size_t rounded = rounded_rows(observed, exact_sum);
-        std::printf("%s rounded-rows=%zu/%d\n", label, rounded, kTile);
-        if (rounded == 0) {
-            std::fprintf(stderr, "%s exercises no FP32 rounding\n", label);
+        const int roundings = tree_roundings(tile);
+        std::printf("%s tree-roundings=%d/%d mma-deviation-rows=%zu/%d\n", label, roundings,
+                    kTile * tk_sm7x::test::kCanonicalRowAdditions,
+                    deviating_rows(observed, exact_sum), kTile);
+        if (roundings == 0) {
+            std::fprintf(stderr, "%s canonical tree performs no inexact addition\n", label);
             matched = false;
         }
     }
