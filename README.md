@@ -91,6 +91,8 @@ The test compares each backend's register-resident result against the
 shared-memory reference and against a host evaluation of the declared order, all
 with zero tolerance, and additionally against an order-independent exact
 reference on the domain where every partial sum is exactly representable in FP32.
+It censuses how many additions of the declared tree actually round, so a fixture
+whose reduction happens to be exact cannot pass as rounding coverage.
 The benchmark reports what it measured for both paths; it is a bounded
 microbenchmark of the reduction, not a claim about end-to-end performance.
 

@@ -684,6 +684,9 @@ for label in sm70 sm75; do
     require_ptx_kernel_opcode "$build_dir/row-reduce-$label.ptx" row_reduce_m8 'wmma[.]' 0
     require_ptx_kernel_opcode "$build_dir/row-reduce-$label.ptx" row_reduce_m8 'ldmatrix' 0
     require_ptx_kernel_opcode "$build_dir/row-reduce-$label.ptx" row_reduce_m8 "$ptx_shfl" 12
+    require_ptx_kernel_opcode "$build_dir/row-reduce-$label.ptx" signed_zero_tie "$ptx_shfl" 1
+    require_kernel_opcode "$build_dir/row-reduce-$label.sass" signed_zero_tie "$any_hmma" 0
+    require_kernel_opcode "$build_dir/row-reduce-$label.sass" signed_zero_tie "$any_ffma" 0
     for step in STEP0 STEP1 STEP2 STEP3; do
         require_kernel_opcode "$build_dir/row-reduce-$label.sass" row_reduce_m8 \
             "$boundary_start"'HMMA[.]884[.]F32[.]F32[.]'"$step""$boundary_end" 4

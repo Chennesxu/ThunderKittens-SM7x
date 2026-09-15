@@ -108,6 +108,17 @@ extern "C" __global__ void row_reduce_m16(
 }
 #endif
 
+// A signed-zero tie is the only case where row_max_op could resolve differently
+// depending on which operand comes first, so the ordered exchange is checked
+// directly rather than through an accumulator the MMA cannot be made to produce.
+extern "C" __global__ void signed_zero_tie(int mask, int invert, float* out) {
+    const int lane = static_cast<int>(threadIdx.x) % 32;
+    const bool own_is_low = (lane & mask) == 0;
+    const bool positive = own_is_low == (invert == 0);
+    const float own = positive ? 0.0f : -0.0f;
+    out[lane] = tk_sm7x::detail::combine_ordered<row_max_op>(own, mask, own_is_low);
+}
+
 enum class Domain { exact, rounded };
 
 struct Fixture {
@@ -453,6 +464,47 @@ bool run_backend(const Fixture& fixture, const Backend& backend, const __half* d
     return release() && matched;
 }
 
+bool check_signed_zero_tie(cudaStream_t stream) {
+    float* device_out = nullptr;
+    const std::size_t bytes = 32 * sizeof(float);
+    if (!cuda_ok(cudaMalloc(reinterpret_cast<void**>(&device_out), bytes), "cudaMalloc(tie)")) {
+        return false;
+    }
+    bool matched = true;
+    for (const int mask : {1, 2, 4}) {
+        for (const int invert : {0, 1}) {
+            const float low = invert == 0 ? 0.0f : -0.0f;
+            const float high = invert == 0 ? -0.0f : 0.0f;
+            const float expected = row_max_op::apply(low, high);
+            signed_zero_tie<<<1, 32, 0, stream>>>(mask, invert, device_out);
+            if (!cuda_ok(cudaGetLastError(), "signed_zero_tie launch")) {
+                matched = false;
+                continue;
+            }
+            std::vector<float> out(32, 1.0f);
+            bool copied = cuda_ok(cudaStreamSynchronize(stream), "cudaStreamSynchronize");
+            copied = cuda_ok(cudaMemcpy(out.data(), device_out, bytes, cudaMemcpyDeviceToHost),
+                             "cudaMemcpy(tie)") && copied;
+            if (!copied) {
+                matched = false;
+                continue;
+            }
+            for (int lane = 0; lane < 32; ++lane) {
+                if (out[lane] != 0.0f || std::signbit(out[lane]) != std::signbit(expected)) {
+                    std::fprintf(stderr,
+                                 "signed-zero tie mask=%d invert=%d lane=%d sign=%d want sign=%d\n",
+                                 mask, invert, lane, static_cast<int>(std::signbit(out[lane])),
+                                 static_cast<int>(std::signbit(expected)));
+                    matched = false;
+                    break;
+                }
+            }
+        }
+    }
+    if (matched) std::printf("signed-zero tie: PASS\n");
+    return cuda_ok(cudaFree(device_out), "cudaFree(tie)") && matched;
+}
+
 bool run_fixture(const Fixture& fixture, cudaStream_t stream) {
     std::vector<__half> a(static_cast<std::size_t>(kTile) * fixture.lda, __float2half(0.0f));
     std::vector<__half> b(static_cast<std::size_t>(fixture.k) * fixture.ldb, __float2half(0.0f));
@@ -532,7 +584,7 @@ int main() {
     if (selection != EXIT_SUCCESS) return selection;
     cudaStream_t stream = nullptr;
     if (!cuda_ok(cudaStreamCreate(&stream), "cudaStreamCreate")) return EXIT_FAILURE;
-    bool passed = true;
+    bool passed = check_signed_zero_tie(stream);
     for (const Fixture& fixture : kFixtures) passed = run_fixture(fixture, stream) && passed;
     const bool destroyed = cuda_ok(cudaStreamDestroy(stream), "cudaStreamDestroy");
     if (passed && destroyed) std::printf("row reduce: PASS ordinal=%d\n", device);
