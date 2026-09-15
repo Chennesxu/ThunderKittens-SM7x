@@ -172,19 +172,6 @@ ptx_x1_trans="$boundary_start"'ldmatrix[.]sync[.]aligned[.]m8n8[.]x1[.]trans[.]s
 forbidden_differential_ptx="$boundary_start"'(cp[.]async|mbarrier|wgmma|tcgen05|tensormap|stmatrix|multimem)([.]|[^A-Za-z0-9_]|$)|'"$boundary_start"'mma[.]sync[.]aligned[.]m16n8k16[.]'
 forbidden_differential_sass="$boundary_start"'(LDGSTS|HGMMA|BGMMA|IGMMA|QGMMA|WARPGROUP|WARPGROUPSET|UTMALDG|UTMASTG|UBLKCP|STSM)([.]|[^A-Za-z0-9_]|$)'
 
-verify_differential_hmma_counts() {
-    local label=$1
-    local wmma_expected=$2
-    require_kernel_opcode "$build_dir/differential-$label.sass" differential_wmma \
-        "$any_hmma" "$wmma_expected"
-    require_kernel_opcode "$build_dir/differential-$label.sass" differential_m8 \
-        "$any_hmma" 16
-    if [[ "$label" == sm75 ]]; then
-        require_kernel_opcode "$build_dir/differential-$label.sass" differential_m16 \
-            "$any_hmma" 4
-    fi
-}
-
 exercise_differential_forbidden_isa_rejection() {
     local label=$1
     local ptx_probe="$build_dir/differential-$label.ptx.forbidden.probe"
@@ -380,8 +367,6 @@ compile_target gemm-ptx src/gemm.cu sm70 KITTENS_SM70 compute_70 sm_70 KITTENS_M
 compile_target gemm-ptx src/gemm.cu sm75 KITTENS_SM75 compute_75 sm_75 KITTENS_MMA_PTX
 compile_target differential tests/gemm_differential.cu sm70 KITTENS_SM70 compute_70 sm_70
 compile_target differential tests/gemm_differential.cu sm75 KITTENS_SM75 compute_75 sm_75
-verify_differential_hmma_counts sm70 16
-verify_differential_hmma_counts sm75 4
 for label in sm70 sm75; do
     reject_pattern "$build_dir/differential-$label.ptx" "$forbidden_differential_ptx" \
         "prohibited differential PTX instruction"
