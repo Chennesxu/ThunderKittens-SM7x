@@ -123,8 +123,9 @@ bool measure(const Measurement& measurement, const __half* a, const __half* b, f
 
     cudaEvent_t start = nullptr;
     cudaEvent_t stop = nullptr;
-    if (!cuda_ok(cudaEventCreate(&start), "cudaEventCreate(start)") ||
-        !cuda_ok(cudaEventCreate(&stop), "cudaEventCreate(stop)")) {
+    if (!cuda_ok(cudaEventCreate(&start), "cudaEventCreate(start)")) return false;
+    if (!cuda_ok(cudaEventCreate(&stop), "cudaEventCreate(stop)")) {
+        static_cast<void>(cuda_ok(cudaEventDestroy(start), "cudaEventDestroy(start)"));
         return false;
     }
     bool ok = cuda_ok(cudaEventRecord(start), "cudaEventRecord(start)");
