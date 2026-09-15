@@ -639,6 +639,38 @@ bool run_case(const GemmCase& test_case, cudaStream_t stream, ComparisonMode com
     return release() && matched;
 }
 
+constexpr GemmCase kModelCases[] = {
+    {"rounded-positive-short", 16, 16, 16, 24, 24, 20, Pattern::rounded_positive},
+    {"rounded-positive-long", 16, 16, 1024, 1032, 24, 20, Pattern::rounded_positive},
+    {"rounded-signed", 32, 48, 256, 264, 56, 52, Pattern::rounded_signed},
+    {"rounded-mixed", 32, 48, 256, 264, 56, 52, Pattern::rounded_mixed},
+    {"rounded-mixed-long", 32, 48, 1024, 1032, 56, 52, Pattern::rounded_mixed},
+    {"rounded-mixed-zeros", 32, 48, 256, 264, 56, 52, Pattern::rounded_mixed_zeros},
+    {"rounded-cancellation", 16, 32, 1024, 1032, 40, 36, Pattern::rounded_cancellation},
+    {"rounded-zero", 16, 16, 32, 40, 24, 20, Pattern::rounded_zero},
+    {"rounded-production-small", 256, 384, 64, 72, 392, 388, Pattern::rounded_mixed},
+    {"rounded-production-large", 1024, 1024, 32, 40, 1032, 1028, Pattern::rounded_mixed},
+};
+
+constexpr bool roster_has_long_mixed_case() {
+    for (const GemmCase& test_case : kModelCases) {
+        if (test_case.pattern == Pattern::rounded_mixed && test_case.k == 1024) return true;
+    }
+    return false;
+}
+
+constexpr bool roster_has_mixed_zeros_case() {
+    for (const GemmCase& test_case : kModelCases) {
+        if (test_case.pattern == Pattern::rounded_mixed_zeros) return true;
+    }
+    return false;
+}
+
+static_assert(roster_has_long_mixed_case(),
+              "check_model_fixture_coverage needs a K=1024 mixed-exponent case");
+static_assert(roster_has_mixed_zeros_case(),
+              "check_model_fixture_coverage needs a mixed zero/normal case");
+
 }  // namespace
 
 int main() {
@@ -658,19 +690,7 @@ int main() {
     };
     bool passed = true;
     for (const GemmCase& test_case : test_cases) passed = run_case(test_case, stream, ComparisonMode::exact) && passed;
-    const GemmCase model_cases[] = {
-        {"rounded-positive-short", 16, 16, 16, 24, 24, 20, Pattern::rounded_positive},
-        {"rounded-positive-long", 16, 16, 1024, 1032, 24, 20, Pattern::rounded_positive},
-        {"rounded-signed", 32, 48, 256, 264, 56, 52, Pattern::rounded_signed},
-        {"rounded-mixed", 32, 48, 256, 264, 56, 52, Pattern::rounded_mixed},
-        {"rounded-mixed-long", 32, 48, 1024, 1032, 56, 52, Pattern::rounded_mixed},
-        {"rounded-mixed-zeros", 32, 48, 256, 264, 56, 52, Pattern::rounded_mixed_zeros},
-        {"rounded-cancellation", 16, 32, 1024, 1032, 40, 36, Pattern::rounded_cancellation},
-        {"rounded-zero", 16, 16, 32, 40, 24, 20, Pattern::rounded_zero},
-        {"rounded-production-small", 256, 384, 64, 72, 392, 388, Pattern::rounded_mixed},
-        {"rounded-production-large", 1024, 1024, 32, 40, 1032, 1028, Pattern::rounded_mixed},
-    };
-    for (const GemmCase& test_case : model_cases) passed = run_case(test_case, stream, ComparisonMode::model) && passed;
+    for (const GemmCase& test_case : kModelCases) passed = run_case(test_case, stream, ComparisonMode::model) && passed;
     const bool destroyed = tk_sm7x::test::cuda_ok(cudaStreamDestroy(stream), "cudaStreamDestroy");
     return passed && destroyed ? EXIT_SUCCESS : EXIT_FAILURE;
 }
