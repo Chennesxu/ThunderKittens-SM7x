@@ -8,7 +8,7 @@ SM70_FLAGS := -DKITTENS_SM70 -gencode arch=compute_70,code=sm_70
 SM75_FLAGS := -DKITTENS_SM75 -gencode arch=compute_75,code=sm_75
 PTX_MMA_FLAGS := -DKITTENS_MMA_PTX
 
-.PHONY: all check-numerical-bounds check-arch check-codegen build-mma-sm70 build-mma-sm75 test-mma-sm75 build-sm70 build-sm75 test-sm75 sanitize-sm75 build-ptx-sm70 build-ptx-sm75 test-ptx-sm75 sanitize-ptx-sm75 build-bench-sm75 bench-sm75 build-bench-ptx-sm75 bench-ptx-sm75 build-layout-sm70 build-layout-sm75 test-layout-sm75 build-ldmatrix-sm75 test-ldmatrix-sm75 build-ptx-mma-sm70 build-ptx-mma-sm75 test-ptx-mma-sm75 sanitize-ptx-mma-sm75 build-differential-sm70 build-differential-sm75 build-differential-ptx-sm70 build-differential-ptx-sm75 test-differential-sm75 test-differential-ptx-sm75 sanitize-differential-sm75 sanitize-differential-ptx-sm75 build-row-reduce-sm70 build-row-reduce-sm75 test-row-reduce-sm75 sanitize-row-reduce-sm75 clean
+.PHONY: all check-numerical-bounds check-arch check-codegen build-mma-sm70 build-mma-sm75 test-mma-sm75 build-sm70 build-sm75 test-sm75 sanitize-sm75 build-ptx-sm70 build-ptx-sm75 test-ptx-sm75 sanitize-ptx-sm75 build-bench-sm75 bench-sm75 build-bench-ptx-sm75 bench-ptx-sm75 build-layout-sm70 build-layout-sm75 test-layout-sm75 build-ldmatrix-sm75 test-ldmatrix-sm75 build-ptx-mma-sm70 build-ptx-mma-sm75 test-ptx-mma-sm75 sanitize-ptx-mma-sm75 build-differential-sm70 build-differential-sm75 build-differential-ptx-sm70 build-differential-ptx-sm75 test-differential-sm75 test-differential-ptx-sm75 sanitize-differential-sm75 sanitize-differential-ptx-sm75 build-row-reduce-sm70 build-row-reduce-sm75 test-row-reduce-sm75 sanitize-row-reduce-sm75 build-bench-row-reduce-sm75 bench-row-reduce-sm75 clean
 
 all: check-numerical-bounds check-arch check-codegen build-mma-sm70 build-mma-sm75 build-layout-sm70 build-layout-sm75 build-ldmatrix-sm75 build-ptx-mma-sm70 build-ptx-mma-sm75 build-sm70 build-sm75 build-ptx-sm70 build-ptx-sm75 build-differential-sm70 build-differential-sm75 build-differential-ptx-sm70 build-differential-ptx-sm75 build-row-reduce-sm70 build-row-reduce-sm75
 
@@ -204,6 +204,21 @@ test-row-reduce-sm75: build-row-reduce-sm75
 sanitize-row-reduce-sm75: build-row-reduce-sm75
 	@status=0; BUILD_DIR="$(BUILD_DIR)" bash tests/run_sanitizers.sh row-reduce || status=$$?; \
 	if [[ $$status -eq 77 ]]; then echo "SKIP: row reduce SM75 sanitizer validation pending (script exit 77)"; exit 0; fi; \
+	exit $$status
+
+$(BUILD_DIR)/row-reduce-throughput-sm75: bench/row_reduce_throughput.cu \
+		tests/row_reduce_reference.cuh tests/test_utils.cuh \
+		include/tk_sm7x/arch.cuh include/tk_sm7x/mma.cuh \
+		include/tk_sm7x/ptx_backend.cuh include/tk_sm7x/ptx_ldmatrix.cuh \
+		include/tk_sm7x/ptx_mma.cuh | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) \
+		bench/row_reduce_throughput.cu -o $@
+
+build-bench-row-reduce-sm75: $(BUILD_DIR)/row-reduce-throughput-sm75
+
+bench-row-reduce-sm75: build-bench-row-reduce-sm75
+	@status=0; "$(BUILD_DIR)/row-reduce-throughput-sm75" || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: row reduce SM75 benchmark pending (binary exit 77)"; exit 0; fi; \
 	exit $$status
 
 $(BUILD_DIR)/gemm-throughput-sm75: bench/gemm_throughput.cu tests/test_utils.cuh src/gemm.cu include/tk_sm7x/arch.cuh include/tk_sm7x/mma.cuh include/tk_sm7x/tile.cuh include/tk_sm7x/gemm.cuh | $(BUILD_DIR)

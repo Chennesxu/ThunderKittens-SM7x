@@ -84,12 +84,15 @@ agree exactly rather than within an error budget:
 make build-row-reduce-sm70 build-row-reduce-sm75
 make test-row-reduce-sm75
 make sanitize-row-reduce-sm75
+make bench-row-reduce-sm75
 ```
 
 The test compares each backend's register-resident result against the
 shared-memory reference and against a host evaluation of the declared order, all
 with zero tolerance, and additionally against an order-independent exact
 reference on the domain where every partial sum is exactly representable in FP32.
+The benchmark reports what it measured for both paths; it is a bounded
+microbenchmark of the reduction, not a claim about end-to-end performance.
 
 - SM75 correctness and Compute Sanitizer checks pass on the identified Turing device.
 - Compile and codegen checks pass with CUDA 11.0.3 and the local CUDA 12.4 toolkit.
