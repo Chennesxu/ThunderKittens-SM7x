@@ -666,10 +666,19 @@ constexpr bool roster_has_mixed_zeros_case() {
     return false;
 }
 
+constexpr bool roster_has_positive_case() {
+    for (const GemmCase& test_case : kModelCases) {
+        if (test_case.pattern == Pattern::rounded_positive) return true;
+    }
+    return false;
+}
+
 static_assert(roster_has_long_mixed_case(),
               "check_model_fixture_coverage needs a K=1024 mixed-exponent case");
 static_assert(roster_has_mixed_zeros_case(),
               "check_model_fixture_coverage needs a mixed zero/normal case");
+static_assert(roster_has_positive_case(),
+              "check_double_reference_requirement needs a rounded-positive case");
 
 }  // namespace
 
