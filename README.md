@@ -48,6 +48,53 @@ make bench-ptx-sm75
 The SM70 PTX target is compile- and codegen-checked only; opting in does not
 change its experimental status or expand the supported architecture set.
 
+### Tile row statistics
+
+The public `row_sum` and `row_max` operations reduce the 16 columns of an
+`rt_c` accumulator, writing 16 contiguous FP32 values indexed by logical row.
+The same signatures work in the default WMMA and opt-in PTX builds. A one-warp
+16×16×16 GEMM using them is in [examples/gemm_row_stats.cu](examples/gemm_row_stats.cu):
+
+```cpp
+tk_sm7x::rt_a a_tile;
+tk_sm7x::rt_b b_tile;
+tk_sm7x::rt_c c_tile;
+tk_sm7x::load(a_tile, shared_a, 0);
+tk_sm7x::load(b_tile, shared_b, 0);
+tk_sm7x::zero(c_tile);
+tk_sm7x::mma(c_tile, a_tile, b_tile);
+tk_sm7x::store(shared_c, c_tile);
+__syncwarp();
+tk_sm7x::store_block<32>(tk_sm7x::gl<float>{c, 16, 16, 16}, shared_c, 0, 0);
+tk_sm7x::row_sum(sums, c_tile, scratch);
+tk_sm7x::row_max(maxima, c_tile, scratch);
+```
+
+Here `shared_a` is a row-major FP16 tile, `shared_b` is a column-major FP16
+tile, and `shared_c` and `scratch` are separate row-major FP32 tiles. The caller
+allocates `scratch` explicitly in shared memory: one 16×16 tile is 1024 bytes
+per warp. WMMA uses it to store and reduce the accumulator; the PTX reduction
+does not use it, but takes the same argument. `sums` and `maxima` each point to
+16 writable FP32 values in shared or global memory. They must not overlap
+`scratch`, and concurrent warps need private scratch and disjoint destinations.
+The 32 lanes of each warp must call together in a one-dimensional CTA with a
+block size divisible by 32. Each call completes its writes and permits the
+calling warp to consume the result or reuse scratch on return. Cross-warp and
+cross-CTA consumers need their own synchronization. Inputs and sum
+intermediates must be finite; the reduction uses a balanced column-order tree,
+with maximum ties choosing the right operand.
+
+```text
+make build-example-row-stats-sm70 build-example-row-stats-sm75
+make build-example-row-stats-ptx-sm70 build-example-row-stats-ptx-sm75
+make example-row-stats-sm75 example-row-stats-ptx-sm75
+```
+
+The example writes all 256 FP32 C values and both 16-value statistics arrays,
+then checks them against an exact q/8 input reference. SM70 example builds are
+compile-only; runtime validation remains limited to SM75 hardware. An exit 77
+from an SM75 binary is reported by Make as SKIP.
+
 The differential GEMM driver runs six exact-domain cases and ten model-domain
 cases: full-mantissa normal-FP16 inputs, including mixed normal exponents, plus
 the declared zero cases. It compares the WMMA, PTX m8, and (on SM75) PTX m16

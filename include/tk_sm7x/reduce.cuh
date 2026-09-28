@@ -9,13 +9,14 @@
 namespace tk_sm7x {
 namespace detail {
 
-// All lanes of one warp call convergently. dst points to 16 contiguous floats
-// in shared or global memory, is uniform across lanes, and does not overlap
-// scratch. scratch is caller-owned, warp-private shared memory. The final warp
-// barrier makes output reads and scratch reuse safe on return; cross-warp and
-// cross-CTA consumers must synchronize separately. Finite values and finite
-// sum intermediates are required. Columns combine in balanced index order;
-// maximum ties select the right operand.
+// All lanes of one warp in a one-dimensional CTA whose block size is a multiple
+// of 32 call convergently. dst points to 16 contiguous floats in shared or
+// global memory, is uniform across lanes, and does not overlap scratch.
+// Concurrent warps need disjoint destinations and private shared scratch. The
+// final warp barrier makes output reads and scratch reuse safe on return;
+// cross-warp and cross-CTA consumers must synchronize separately. Finite values
+// and finite sum intermediates are required. Columns combine in balanced index
+// order; maximum ties select the right operand.
 template <class Op>
 __device__ __forceinline__ void reduce_rows(
     float* dst, const rt_c& src, st<float, 16, 16, row_major>& scratch) {
