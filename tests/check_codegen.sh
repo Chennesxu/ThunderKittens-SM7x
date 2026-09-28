@@ -371,7 +371,11 @@ compile_target differential tests/gemm_differential.cu sm70 KITTENS_SM70 compute
 compile_target differential tests/gemm_differential.cu sm75 KITTENS_SM75 compute_75 sm_75
 compile_target row-reduce tests/row_reduce.cu sm70 KITTENS_SM70 compute_70 sm_70
 compile_target row-reduce tests/row_reduce.cu sm75 KITTENS_SM75 compute_75 sm_75
-for prefix in differential row-reduce; do
+compile_target tile-reduce tests/codegen_tile_reduce.cu sm70 KITTENS_SM70 compute_70 sm_70
+compile_target tile-reduce tests/codegen_tile_reduce.cu sm75 KITTENS_SM75 compute_75 sm_75
+compile_target tile-reduce-ptx tests/codegen_tile_reduce.cu sm70 KITTENS_SM70 compute_70 sm_70 KITTENS_MMA_PTX
+compile_target tile-reduce-ptx tests/codegen_tile_reduce.cu sm75 KITTENS_SM75 compute_75 sm_75 KITTENS_MMA_PTX
+for prefix in differential row-reduce tile-reduce tile-reduce-ptx; do
     for label in sm70 sm75; do
         reject_pattern "$build_dir/$prefix-$label.ptx" "$forbidden_ptx" \
             "prohibited $prefix PTX instruction"
@@ -386,7 +390,7 @@ expect_layout_reject sm70 KITTENS_SM70 sm_70
 expect_layout_reject sm75 KITTENS_SM75 sm_75
 expect_ptx_backend_capability
 
-for prefix in ldmatrix ptx-backend mma gemm gemm-ptx differential row-reduce; do
+for prefix in ldmatrix ptx-backend mma gemm gemm-ptx differential row-reduce tile-reduce tile-reduce-ptx; do
     if [[ "$prefix" == ldmatrix ]]; then
         require_pattern "$build_dir/$prefix-sm75.ptx" '\.target[[:space:]]+sm_75' \
             "sm_75 target"
@@ -412,6 +416,30 @@ else
     load_b='wmma\.load\.b\.sync\.aligned\.col\.m16n16k16\.shared\.f16'
     mma='wmma\.mma\.sync\.aligned\.row\.col\.m16n16k16\.f32\.f32'
     store='wmma\.store\.d\.sync\.aligned\.row\.m16n16k16\.shared\.f32'
+fi
+
+for label in sm70 sm75; do
+    wmma_ptx="$build_dir/tile-reduce-$label.ptx"
+    ptx_ptx="$build_dir/tile-reduce-ptx-$label.ptx"
+    tile_store='wmma[.]store[.]d[.]sync[.]aligned[.]row[.]m16n16k16([.]shared)?[.]f32'
+    require_ptx_kernel_opcode "$wmma_ptx" codegen_tile_reduce "$tile_store" 2
+    require_ptx_kernel_opcode "$wmma_ptx" codegen_tile_reduce "$ptx_shfl" 0
+    require_ptx_kernel_opcode "$ptx_ptx" codegen_tile_reduce 'wmma[.]' 0
+    require_ptx_kernel_opcode "$ptx_ptx" codegen_tile_reduce '(ld|st)[.]shared[.]f32' 0
+    if [[ "$label" == sm70 ]]; then
+        require_ptx_kernel_opcode "$ptx_ptx" codegen_tile_reduce "$ptx_shfl" 12
+        require_ptx_kernel_opcode "$ptx_ptx" codegen_tile_reduce "$ptx_m8" 4
+        require_ptx_kernel_opcode "$ptx_ptx" codegen_tile_reduce "$ptx_m16" 0
+    else
+        require_ptx_kernel_opcode "$ptx_ptx" codegen_tile_reduce "$ptx_shfl" 16
+        require_ptx_kernel_opcode "$ptx_ptx" codegen_tile_reduce "$ptx_m16" 4
+        require_ptx_kernel_opcode "$ptx_ptx" codegen_tile_reduce "$ptx_m8" 0
+    fi
+done
+if (require_ptx_kernel_opcode "$build_dir/tile-reduce-sm75.ptx" \
+        codegen_tile_reduce 'wmma[.]' 0) >/dev/null 2>&1; then
+    echo "tile reduction route gate accepted WMMA artifact as PTX" >&2
+    exit 1
 fi
 
 for ptx in "$build_dir/mma-sm70.ptx" "$build_dir/mma-sm75.ptx" \

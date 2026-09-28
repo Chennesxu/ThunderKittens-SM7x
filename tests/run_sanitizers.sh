@@ -50,6 +50,18 @@ case "$selector" in
         memcheck_api=(--report-api-errors no)
         pass_message="Row reduce SM75 sanitizers: PASS"
         ;;
+    tile-reduce)
+        sanitizer_test="$build_dir/tile-reduce-sm75"
+        build_hint=build-tile-reduce-sm75
+        memcheck_api=()
+        pass_message="Tile reduce SM75 sanitizers: PASS"
+        ;;
+    tile-reduce-ptx)
+        sanitizer_test="$build_dir/tile-reduce-ptx-sm75"
+        build_hint=build-tile-reduce-ptx-sm75
+        memcheck_api=()
+        pass_message="PTX tile reduce SM75 sanitizers: PASS"
+        ;;
     *)
         echo "unknown sanitizer selector: $selector" >&2
         exit 2

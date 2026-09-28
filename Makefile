@@ -7,10 +7,11 @@ COMMON_FLAGS := -std=c++17 -O2 -lineinfo -I$(ROOT_DIR)/include -Xcompiler=-Wall,
 SM70_FLAGS := -DKITTENS_SM70 -gencode arch=compute_70,code=sm_70
 SM75_FLAGS := -DKITTENS_SM75 -gencode arch=compute_75,code=sm_75
 PTX_MMA_FLAGS := -DKITTENS_MMA_PTX
+PTX_REDUCE_OPS := include/tk_sm7x/row_reduce_ops.cuh
 
-.PHONY: all check-numerical-bounds check-arch check-codegen build-mma-sm70 build-mma-sm75 test-mma-sm75 build-sm70 build-sm75 test-sm75 sanitize-sm75 build-ptx-sm70 build-ptx-sm75 test-ptx-sm75 sanitize-ptx-sm75 build-bench-sm75 bench-sm75 build-bench-ptx-sm75 bench-ptx-sm75 build-layout-sm70 build-layout-sm75 test-layout-sm75 build-ldmatrix-sm75 test-ldmatrix-sm75 build-ptx-mma-sm70 build-ptx-mma-sm75 test-ptx-mma-sm75 sanitize-ptx-mma-sm75 build-differential-sm70 build-differential-sm75 build-differential-ptx-sm70 build-differential-ptx-sm75 test-differential-sm75 test-differential-ptx-sm75 sanitize-differential-sm75 sanitize-differential-ptx-sm75 build-row-reduce-sm70 build-row-reduce-sm75 test-row-reduce-sm75 sanitize-row-reduce-sm75 build-bench-row-reduce-sm75 bench-row-reduce-sm75 clean
+.PHONY: all check-numerical-bounds check-arch check-codegen build-mma-sm70 build-mma-sm75 test-mma-sm75 build-sm70 build-sm75 test-sm75 sanitize-sm75 build-ptx-sm70 build-ptx-sm75 test-ptx-sm75 sanitize-ptx-sm75 build-bench-sm75 bench-sm75 build-bench-ptx-sm75 bench-ptx-sm75 build-layout-sm70 build-layout-sm75 test-layout-sm75 build-ldmatrix-sm75 test-ldmatrix-sm75 build-ptx-mma-sm70 build-ptx-mma-sm75 test-ptx-mma-sm75 sanitize-ptx-mma-sm75 build-differential-sm70 build-differential-sm75 build-differential-ptx-sm70 build-differential-ptx-sm75 test-differential-sm75 test-differential-ptx-sm75 sanitize-differential-sm75 sanitize-differential-ptx-sm75 build-row-reduce-sm70 build-row-reduce-sm75 test-row-reduce-sm75 sanitize-row-reduce-sm75 build-tile-reduce-sm70 build-tile-reduce-sm75 build-tile-reduce-ptx-sm70 build-tile-reduce-ptx-sm75 test-tile-reduce-sm75 test-tile-reduce-ptx-sm75 sanitize-tile-reduce-sm75 sanitize-tile-reduce-ptx-sm75 build-bench-row-reduce-sm75 bench-row-reduce-sm75 clean
 
-all: check-numerical-bounds check-arch check-codegen build-mma-sm70 build-mma-sm75 build-layout-sm70 build-layout-sm75 build-ldmatrix-sm75 build-ptx-mma-sm70 build-ptx-mma-sm75 build-sm70 build-sm75 build-ptx-sm70 build-ptx-sm75 build-differential-sm70 build-differential-sm75 build-differential-ptx-sm70 build-differential-ptx-sm75 build-row-reduce-sm70 build-row-reduce-sm75
+all: check-numerical-bounds check-arch check-codegen build-mma-sm70 build-mma-sm75 build-layout-sm70 build-layout-sm75 build-ldmatrix-sm75 build-ptx-mma-sm70 build-ptx-mma-sm75 build-sm70 build-sm75 build-ptx-sm70 build-ptx-sm75 build-differential-sm70 build-differential-sm75 build-differential-ptx-sm70 build-differential-ptx-sm75 build-row-reduce-sm70 build-row-reduce-sm75 build-tile-reduce-sm70 build-tile-reduce-sm75 build-tile-reduce-ptx-sm70 build-tile-reduce-ptx-sm75
 
 $(BUILD_DIR):
 	mkdir -p "$(BUILD_DIR)"
@@ -192,6 +193,52 @@ $(BUILD_DIR)/row-reduce-sm75: tests/row_reduce.cu tests/row_reduce_reference.cuh
 	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) \
 		tests/row_reduce.cu -o $@
 
+TILE_REDUCE_HEADERS := tests/row_reduce_reference.cuh tests/test_utils.cuh \
+	include/tk_sm7x/arch.cuh include/tk_sm7x/mma.cuh include/tk_sm7x/tile.cuh \
+	include/tk_sm7x/reduce.cuh include/tk_sm7x/row_reduce_ops.cuh \
+	include/tk_sm7x/ptx_backend.cuh include/tk_sm7x/ptx_ldmatrix.cuh \
+	include/tk_sm7x/ptx_mma.cuh
+
+$(BUILD_DIR)/tile-reduce-sm70: tests/tile_reduce.cu $(TILE_REDUCE_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM70_FLAGS) tests/tile_reduce.cu -o $@
+
+$(BUILD_DIR)/tile-reduce-sm75: tests/tile_reduce.cu $(TILE_REDUCE_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) tests/tile_reduce.cu -o $@
+
+$(BUILD_DIR)/tile-reduce-ptx-sm70: tests/tile_reduce.cu $(TILE_REDUCE_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM70_FLAGS) $(PTX_MMA_FLAGS) tests/tile_reduce.cu -o $@
+
+$(BUILD_DIR)/tile-reduce-ptx-sm75: tests/tile_reduce.cu $(TILE_REDUCE_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) $(PTX_MMA_FLAGS) tests/tile_reduce.cu -o $@
+
+build-tile-reduce-sm70: $(BUILD_DIR)/tile-reduce-sm70
+
+build-tile-reduce-sm75: $(BUILD_DIR)/tile-reduce-sm75
+
+build-tile-reduce-ptx-sm70: $(BUILD_DIR)/tile-reduce-ptx-sm70
+
+build-tile-reduce-ptx-sm75: $(BUILD_DIR)/tile-reduce-ptx-sm75
+
+test-tile-reduce-sm75: build-tile-reduce-sm75
+	@status=0; "$(BUILD_DIR)/tile-reduce-sm75" || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: tile reduce SM75 runtime validation pending (binary exit 77)"; exit 0; fi; \
+	exit $$status
+
+test-tile-reduce-ptx-sm75: build-tile-reduce-ptx-sm75
+	@status=0; "$(BUILD_DIR)/tile-reduce-ptx-sm75" || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: PTX tile reduce SM75 runtime validation pending (binary exit 77)"; exit 0; fi; \
+	exit $$status
+
+sanitize-tile-reduce-sm75: build-tile-reduce-sm75
+	@status=0; BUILD_DIR="$(BUILD_DIR)" bash tests/run_sanitizers.sh tile-reduce || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: tile reduce SM75 sanitizer validation pending (script exit 77)"; exit 0; fi; \
+	exit $$status
+
+sanitize-tile-reduce-ptx-sm75: build-tile-reduce-ptx-sm75
+	@status=0; BUILD_DIR="$(BUILD_DIR)" bash tests/run_sanitizers.sh tile-reduce-ptx || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: PTX tile reduce SM75 sanitizer validation pending (script exit 77)"; exit 0; fi; \
+	exit $$status
+
 build-row-reduce-sm70: $(BUILD_DIR)/row-reduce-sm70
 
 build-row-reduce-sm75: $(BUILD_DIR)/row-reduce-sm75
@@ -238,6 +285,14 @@ $(BUILD_DIR)/gemm-throughput-ptx-sm75: bench/gemm_throughput.cu \
 		include/tk_sm7x/tile.cuh include/tk_sm7x/gemm.cuh | $(BUILD_DIR)
 	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) $(PTX_MMA_FLAGS) \
 		src/gemm.cu bench/gemm_throughput.cu -o $@
+
+$(BUILD_DIR)/gemm-ptx-sm70 $(BUILD_DIR)/gemm-ptx-sm75 \
+$(BUILD_DIR)/gemm-differential-sm70 $(BUILD_DIR)/gemm-differential-sm75 \
+$(BUILD_DIR)/gemm-differential-ptx-sm70 $(BUILD_DIR)/gemm-differential-ptx-sm75 \
+$(BUILD_DIR)/ptx-mma-correctness-sm70 $(BUILD_DIR)/ptx-mma-correctness-sm75 \
+$(BUILD_DIR)/row-reduce-sm70 $(BUILD_DIR)/row-reduce-sm75 \
+$(BUILD_DIR)/row-reduce-throughput-sm75 \
+$(BUILD_DIR)/gemm-throughput-ptx-sm75: $(PTX_REDUCE_OPS)
 
 build-bench-ptx-sm75: $(BUILD_DIR)/gemm-throughput-ptx-sm75
 

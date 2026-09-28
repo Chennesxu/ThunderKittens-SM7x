@@ -9,6 +9,7 @@
 #include "tk_sm7x/arch.cuh"
 #include "tk_sm7x/ptx_ldmatrix.cuh"
 #include "tk_sm7x/ptx_mma.cuh"
+#include "tk_sm7x/row_reduce_ops.cuh"
 
 namespace tk_sm7x::detail {
 
@@ -24,18 +25,6 @@ namespace tk_sm7x::detail {
 // associative and the two layouts execute the stages in different sequences.
 // combine_ordered keeps the lower-column operand first in every lane, so a tie
 // cannot resolve differently per lane either.
-struct row_sum_op {
-    __host__ __device__ static __forceinline__ float apply(float low, float high) {
-        return low + high;
-    }
-};
-
-struct row_max_op {
-    __host__ __device__ static __forceinline__ float apply(float low, float high) {
-        return low > high ? low : high;
-    }
-};
-
 template <class Op>
 __device__ __forceinline__ float combine_ordered(float own, int mask, bool own_is_low) {
     const float other = __shfl_xor_sync(0xffffffffu, own, mask);
