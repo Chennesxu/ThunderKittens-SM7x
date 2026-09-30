@@ -377,7 +377,11 @@ compile_target tile-reduce-ptx tests/codegen_tile_reduce.cu sm70 KITTENS_SM70 co
 compile_target tile-reduce-ptx tests/codegen_tile_reduce.cu sm75 KITTENS_SM75 compute_75 sm_75 KITTENS_MMA_PTX
 compile_target softmax-backend tests/softmax_backend.cu sm70 KITTENS_SM70 compute_70 sm_70
 compile_target softmax-backend tests/softmax_backend.cu sm75 KITTENS_SM75 compute_75 sm_75
-for prefix in differential row-reduce tile-reduce tile-reduce-ptx softmax-backend; do
+compile_target tile-softmax tests/tile_softmax.cu sm70 KITTENS_SM70 compute_70 sm_70
+compile_target tile-softmax tests/tile_softmax.cu sm75 KITTENS_SM75 compute_75 sm_75
+compile_target tile-softmax-ptx tests/tile_softmax.cu sm70 KITTENS_SM70 compute_70 sm_70 KITTENS_MMA_PTX
+compile_target tile-softmax-ptx tests/tile_softmax.cu sm75 KITTENS_SM75 compute_75 sm_75 KITTENS_MMA_PTX
+for prefix in differential row-reduce tile-reduce tile-reduce-ptx softmax-backend tile-softmax tile-softmax-ptx; do
     for label in sm70 sm75; do
         reject_pattern "$build_dir/$prefix-$label.ptx" "$forbidden_ptx" \
             "prohibited $prefix PTX instruction"
@@ -392,7 +396,7 @@ expect_layout_reject sm70 KITTENS_SM70 sm_70
 expect_layout_reject sm75 KITTENS_SM75 sm_75
 expect_ptx_backend_capability
 
-for prefix in ldmatrix ptx-backend mma gemm gemm-ptx differential row-reduce tile-reduce tile-reduce-ptx softmax-backend; do
+for prefix in ldmatrix ptx-backend mma gemm gemm-ptx differential row-reduce tile-reduce tile-reduce-ptx softmax-backend tile-softmax tile-softmax-ptx; do
     if [[ "$prefix" == ldmatrix ]]; then
         require_pattern "$build_dir/$prefix-sm75.ptx" '\.target[[:space:]]+sm_75' \
             "sm_75 target"
@@ -419,6 +423,29 @@ else
     mma='wmma\.mma\.sync\.aligned\.row\.col\.m16n16k16\.f32\.f32'
     store='wmma\.store\.d\.sync\.aligned\.row\.m16n16k16\.shared\.f32'
 fi
+
+for label in sm70 sm75; do
+    softmax_wmma="$build_dir/tile-softmax-$label.ptx"
+    softmax_ptx="$build_dir/tile-softmax-ptx-$label.ptx"
+    softmax_store='wmma[.]store[.]d[.]sync[.]aligned[.]row[.]m16n16k16([.]shared)?[.]f32'
+    require_ptx_kernel_opcode "$softmax_wmma" tile_softmax "$softmax_store" 4
+    require_ptx_kernel_opcode "$softmax_wmma" tile_softmax "$ptx_shfl" 0
+    require_ptx_kernel_opcode "$softmax_wmma" tile_softmax "$ptx_m8|$ptx_m16" 0
+    require_ptx_kernel_opcode "$softmax_ptx" tile_softmax 'wmma[.]' 0
+    if [[ "$label" == sm70 ]]; then
+        require_ptx_kernel_opcode "$softmax_ptx" tile_softmax "$ptx_shfl" 24
+        require_ptx_kernel_opcode "$softmax_ptx" tile_softmax "$ptx_m8" 4
+        require_ptx_kernel_opcode "$softmax_ptx" tile_softmax "$ptx_m16|ldmatrix" 0
+        require_kernel_opcode "$build_dir/tile-softmax-ptx-$label.sass" tile_softmax "$any_hmma" 16
+    else
+        require_ptx_kernel_opcode "$softmax_ptx" tile_softmax "$ptx_shfl" 32
+        require_ptx_kernel_opcode "$softmax_ptx" tile_softmax "$ptx_m16" 4
+        require_ptx_kernel_opcode "$softmax_ptx" tile_softmax "$ptx_m8" 0
+        require_kernel_opcode "$build_dir/tile-softmax-ptx-$label.sass" tile_softmax "$any_hmma" 4
+    fi
+done
+reject_pattern "$build_dir/tile-softmax-ptx-sm70.sass" 'HMMA[.]1688|LDSM' \
+    "SM75+ public softmax SASS"
 
 for label in sm70 sm75; do
     wmma_ptx="$build_dir/tile-reduce-$label.ptx"

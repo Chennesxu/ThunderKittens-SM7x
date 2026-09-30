@@ -8,6 +8,54 @@ SM70_FLAGS := -DKITTENS_SM70 -gencode arch=compute_70,code=sm_70
 SM75_FLAGS := -DKITTENS_SM75 -gencode arch=compute_75,code=sm_75
 PTX_MMA_FLAGS := -DKITTENS_MMA_PTX
 PTX_REDUCE_OPS := include/tk_sm7x/row_reduce_ops.cuh
+TILE_SOFTMAX_HEADERS := tests/test_utils.cuh include/tk_sm7x/softmax.cuh \
+	include/tk_sm7x/tile.cuh include/tk_sm7x/mma.cuh include/tk_sm7x/arch.cuh \
+	include/tk_sm7x/row_reduce_ops.cuh include/tk_sm7x/ptx_backend.cuh \
+	include/tk_sm7x/ptx_ldmatrix.cuh include/tk_sm7x/ptx_mma.cuh
+
+.PHONY: build-tile-softmax-sm70 build-tile-softmax-sm75 build-tile-softmax-ptx-sm70 build-tile-softmax-ptx-sm75 test-tile-softmax-sm75 test-tile-softmax-ptx-sm75 sanitize-tile-softmax-sm75 sanitize-tile-softmax-ptx-sm75
+all: build-tile-softmax-sm70 build-tile-softmax-sm75 build-tile-softmax-ptx-sm70 build-tile-softmax-ptx-sm75
+
+$(BUILD_DIR)/tile-softmax-sm70: tests/tile_softmax.cu $(TILE_SOFTMAX_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM70_FLAGS) tests/tile_softmax.cu -o $@
+
+build-tile-softmax-sm70: $(BUILD_DIR)/tile-softmax-sm70
+
+$(BUILD_DIR)/tile-softmax-sm75: tests/tile_softmax.cu $(TILE_SOFTMAX_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) tests/tile_softmax.cu -o $@
+
+build-tile-softmax-sm75: $(BUILD_DIR)/tile-softmax-sm75
+
+test-tile-softmax-sm75: build-tile-softmax-sm75
+	@status=0; "$(BUILD_DIR)/tile-softmax-sm75" || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: tile softmax SM75 runtime validation pending (binary exit 77)"; exit 0; fi; \
+	exit $$status
+
+sanitize-tile-softmax-sm75: build-tile-softmax-sm75
+	@status=0; BUILD_DIR="$(BUILD_DIR)" bash tests/run_sanitizers.sh tile-softmax || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: tile softmax SM75 sanitizer validation pending (script exit 77)"; exit 0; fi; \
+	exit $$status
+
+$(BUILD_DIR)/tile-softmax-ptx-sm70: tests/tile_softmax.cu $(TILE_SOFTMAX_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM70_FLAGS) $(PTX_MMA_FLAGS) tests/tile_softmax.cu -o $@
+
+build-tile-softmax-ptx-sm70: $(BUILD_DIR)/tile-softmax-ptx-sm70
+
+$(BUILD_DIR)/tile-softmax-ptx-sm75: tests/tile_softmax.cu $(TILE_SOFTMAX_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) $(PTX_MMA_FLAGS) tests/tile_softmax.cu -o $@
+
+build-tile-softmax-ptx-sm75: $(BUILD_DIR)/tile-softmax-ptx-sm75
+
+test-tile-softmax-ptx-sm75: build-tile-softmax-ptx-sm75
+	@status=0; "$(BUILD_DIR)/tile-softmax-ptx-sm75" || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: PTX tile softmax SM75 runtime validation pending (binary exit 77)"; exit 0; fi; \
+	exit $$status
+
+sanitize-tile-softmax-ptx-sm75: build-tile-softmax-ptx-sm75
+	@status=0; BUILD_DIR="$(BUILD_DIR)" bash tests/run_sanitizers.sh tile-softmax-ptx || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: PTX tile softmax SM75 sanitizer validation pending (script exit 77)"; exit 0; fi; \
+	exit $$status
+
 
 .PHONY: build-softmax-backend-sm70 build-softmax-backend-sm75 test-softmax-backend-sm75 sanitize-softmax-backend-sm75
 all: build-softmax-backend-sm70 build-softmax-backend-sm75

@@ -95,6 +95,41 @@ then checks them against an exact q/8 input reference. SM70 example builds are
 compile-only; runtime validation remains limited to SM75 hardware. An exit 77
 from an SM75 binary is reported by Make as SKIP.
 
+### Tile row softmax
+
+Include `tk_sm7x/softmax.cuh` to normalize each of the 16 rows of an `rt_c`:
+
+```cpp
+__shared__ tk_sm7x::st<float, 16, 16, tk_sm7x::row_major> probabilities;
+__shared__ tk_sm7x::st<float, 16, 16, tk_sm7x::row_major> scratch;
+tk_sm7x::row_softmax(probabilities, c_tile, scratch);
+```
+
+The accumulator must contain finite logits and is preserved. The output and
+scratch must be distinct, aligned shared tiles private to the calling warp.
+All 32 lanes call convergently in a one-dimensional CTA whose block size is
+divisible by 32. The output is row-major FP32, computed with maximum subtraction,
+CUDA `expf`, normal FP32 division and balanced column-order reductions. On return,
+the warp can read the output and reuse scratch; consumers in other warps or CTAs
+require caller synchronization. WMMA stores the opaque accumulator to scratch;
+the opt-in PTX path uses its backend register layout and warp shuffles.
+
+The [public correctness test](tests/tile_softmax.cu) uses FP16 scores times an
+identity matrix, verifies the exact accumulator logits, then compares with an
+independent binary64 softmax. Its predeclared absolute bound is `512 * 2^-23`
+for each probability and the row sum, only for these identity-MMA fixtures:
+position-distinguishable q/8 logits, zero rows and offsets near ±1000. This is
+neither a universal accuracy guarantee nor the GEMM model budget.
+
+```text
+make build-tile-softmax-sm70 build-tile-softmax-ptx-sm70
+make test-tile-softmax-sm75 test-tile-softmax-ptx-sm75
+make sanitize-tile-softmax-sm75 sanitize-tile-softmax-ptx-sm75
+```
+
+SM70 and CUDA 11.0 receive compile/codegen validation only; SM70 remains
+experimental. SM75 runtime exit 77 is SKIP.
+
 The differential GEMM driver runs six exact-domain cases and ten model-domain
 cases: full-mantissa normal-FP16 inputs, including mixed normal exponents, plus
 the declared zero cases. It compares the WMMA, PTX m8, and (on SM75) PTX m16

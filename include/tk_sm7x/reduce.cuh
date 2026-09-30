@@ -32,11 +32,7 @@ __device__ __forceinline__ void reduce_rows(
     const int lane = static_cast<int>(threadIdx.x) % 32;
     if (lane < 16) {
         const float* row = scratch.data + static_cast<std::size_t>(lane) * 16;
-        const float q0 = Op::apply(Op::apply(row[0], row[1]), Op::apply(row[2], row[3]));
-        const float q1 = Op::apply(Op::apply(row[4], row[5]), Op::apply(row[6], row[7]));
-        const float q2 = Op::apply(Op::apply(row[8], row[9]), Op::apply(row[10], row[11]));
-        const float q3 = Op::apply(Op::apply(row[12], row[13]), Op::apply(row[14], row[15]));
-        dst[lane] = Op::apply(Op::apply(q0, q1), Op::apply(q2, q3));
+        dst[lane] = balanced_row_reduce<Op>(row);
     }
 #endif
     __syncwarp(0xffffffffu);
