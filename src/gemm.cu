@@ -63,6 +63,27 @@ static_assert(!use_small_tile(1024, 1024),
 static_assert(!use_small_tile(8388608, 16),
               "grid-y boundary case must exercise the large kernel");
 
+#if defined(KITTENS_SM75) && defined(KITTENS_MMA_PTX)
+template <int THREADS, int C>
+__device__ __forceinline__ void load_b_block(
+    st<__half, 16, C, col_major>& dst, const gl<const __half>& src,
+    std::size_t row0, std::size_t col0) {
+    static_assert((C == 64 && THREADS == 128) || (C == 128 && THREADS == 256),
+                  "B staging requires a tested tile and thread count");
+    const int tid = static_cast<int>(threadIdx.x);
+    const int first = (tid / 32) * 16 + tid % 16 + (tid % 32 / 16) * C;
+#pragma unroll
+    for (int linear = first; linear < 16 * C; linear += THREADS) {
+        const std::size_t row = row0 + static_cast<std::size_t>(linear / C);
+        const std::size_t col = col0 + static_cast<std::size_t>(linear % C);
+        const bool inside = row < static_cast<std::size_t>(src.rows) &&
+                            col < static_cast<std::size_t>(src.cols);
+        dst.data[st<__half, 16, C, col_major>::offset(linear)] =
+            inside ? src.data[row * static_cast<std::size_t>(src.ld) + col] : __half{};
+    }
+}
+#endif
+
 template <int TileM, int TileN, int WarpsM, int WarpsN>
 __global__ __launch_bounds__(WarpsM * WarpsN * 32) void gemm_kernel(
     int m, int n, int k,
@@ -101,7 +122,11 @@ __global__ __launch_bounds__(WarpsM * WarpsN * 32) void gemm_kernel(
 
         for (std::size_t k0 = 0; k0 < static_cast<std::size_t>(k); k0 += 16) {
             load_block<kThreads>(a_shared, a_global, m0, k0);
+#if defined(KITTENS_SM75) && defined(KITTENS_MMA_PTX)
+            load_b_block<kThreads>(b_shared, b_global, k0, n0);
+#else
             load_block<kThreads>(b_shared, b_global, k0, n0);
+#endif
             __syncthreads();
 
             rt_a a_fragments[kFragsM];
