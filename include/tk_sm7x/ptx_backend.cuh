@@ -163,6 +163,32 @@ public:
         float* destination, const accumulator& source) {
         reduce_rows<row_max_op>(destination, source);
     }
+
+    // dst and scratch are distinct, warp-private, aligned shared 16x16 tiles.
+    // Finite source values are preserved; return synchronizes all 32 lanes.
+    __device__ static __forceinline__ void softmax(
+        float* dst, const accumulator& source, float* scratch) {
+        const int lane = static_cast<int>(threadIdx.x) % 32;
+        const int mh = mma_m8n8k4::quadpair(lane) / 2;
+        accumulator normalized;
+        row_max(scratch, source);
+        __syncwarp(0xffffffffu);
+#pragma unroll
+        for (int i = 0; i < 8; ++i) {
+            const int row = 8 * mh + (lane & 1) + (i & 2) + 4 * (lane / 16);
+            normalized.value[i] = expf(source.value[i] - scratch[row]);
+        }
+        __syncwarp(0xffffffffu);
+        row_sum(scratch, normalized);
+        __syncwarp(0xffffffffu);
+#pragma unroll
+        for (int i = 0; i < 8; ++i) {
+            const int row = 8 * mh + (lane & 1) + (i & 2) + 4 * (lane / 16);
+            normalized.value[i] /= scratch[row];
+        }
+        store(dst, normalized, 16);
+        __syncwarp(0xffffffffu);
+    }
 };
 
 #if defined(KITTENS_SM75)
@@ -285,6 +311,37 @@ public:
     __device__ static __forceinline__ void row_max(
         float* destination, const accumulator& source) {
         reduce_rows<row_max_op>(destination, source);
+    }
+
+    // dst and scratch are distinct, warp-private, aligned shared 16x16 tiles.
+    // Finite source values are preserved; return synchronizes all 32 lanes.
+    __device__ static __forceinline__ void softmax(
+        float* dst, const accumulator& source, float* scratch) {
+        const int lane = static_cast<int>(threadIdx.x) % 32;
+        accumulator normalized;
+        row_max(scratch, source);
+        __syncwarp(0xffffffffu);
+#pragma unroll
+        for (int nh = 0; nh < 2; ++nh) {
+#pragma unroll
+            for (int reg = 0; reg < 4; ++reg) {
+                const int row = mma_m16n8k8::accumulator_row(lane, reg);
+                normalized.value[nh][reg] = expf(source.value[nh][reg] - scratch[row]);
+            }
+        }
+        __syncwarp(0xffffffffu);
+        row_sum(scratch, normalized);
+        __syncwarp(0xffffffffu);
+#pragma unroll
+        for (int nh = 0; nh < 2; ++nh) {
+#pragma unroll
+            for (int reg = 0; reg < 4; ++reg) {
+                const int row = mma_m16n8k8::accumulator_row(lane, reg);
+                normalized.value[nh][reg] /= scratch[row];
+            }
+        }
+        store(dst, normalized, 16);
+        __syncwarp(0xffffffffu);
     }
 };
 #endif

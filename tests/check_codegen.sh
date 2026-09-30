@@ -375,7 +375,9 @@ compile_target tile-reduce tests/codegen_tile_reduce.cu sm70 KITTENS_SM70 comput
 compile_target tile-reduce tests/codegen_tile_reduce.cu sm75 KITTENS_SM75 compute_75 sm_75
 compile_target tile-reduce-ptx tests/codegen_tile_reduce.cu sm70 KITTENS_SM70 compute_70 sm_70 KITTENS_MMA_PTX
 compile_target tile-reduce-ptx tests/codegen_tile_reduce.cu sm75 KITTENS_SM75 compute_75 sm_75 KITTENS_MMA_PTX
-for prefix in differential row-reduce tile-reduce tile-reduce-ptx; do
+compile_target softmax-backend tests/softmax_backend.cu sm70 KITTENS_SM70 compute_70 sm_70
+compile_target softmax-backend tests/softmax_backend.cu sm75 KITTENS_SM75 compute_75 sm_75
+for prefix in differential row-reduce tile-reduce tile-reduce-ptx softmax-backend; do
     for label in sm70 sm75; do
         reject_pattern "$build_dir/$prefix-$label.ptx" "$forbidden_ptx" \
             "prohibited $prefix PTX instruction"
@@ -390,7 +392,7 @@ expect_layout_reject sm70 KITTENS_SM70 sm_70
 expect_layout_reject sm75 KITTENS_SM75 sm_75
 expect_ptx_backend_capability
 
-for prefix in ldmatrix ptx-backend mma gemm gemm-ptx differential row-reduce tile-reduce tile-reduce-ptx; do
+for prefix in ldmatrix ptx-backend mma gemm gemm-ptx differential row-reduce tile-reduce tile-reduce-ptx softmax-backend; do
     if [[ "$prefix" == ldmatrix ]]; then
         require_pattern "$build_dir/$prefix-sm75.ptx" '\.target[[:space:]]+sm_75' \
             "sm_75 target"
@@ -745,5 +747,39 @@ require_kernel_opcode "$build_dir/row-reduce-sm75.sass" row_reduce_m16 "$any_hmm
 require_kernel_opcode "$build_dir/row-reduce-sm75.sass" row_reduce_m16 "$any_ffma" 0
 require_kernel_opcode "$build_dir/row-reduce-sm75.sass" row_reduce_m16 \
     "$boundary_start"'LDSM[.]' 6
+
+for label in sm70 sm75; do
+    softmax_ptx="$build_dir/softmax-backend-$label.ptx"
+    softmax_sass="$build_dir/softmax-backend-$label.sass"
+    require_ptx_kernel_opcode "$softmax_ptx" softmax_m8 "$ptx_m8" 4
+    require_ptx_kernel_opcode "$softmax_ptx" softmax_m8 "$ptx_m16" 0
+    require_ptx_kernel_opcode "$softmax_ptx" softmax_m8 'wmma[.]|ldmatrix' 0
+    require_ptx_kernel_opcode "$softmax_ptx" softmax_m8 "$ptx_shfl" 24
+    for step in STEP0 STEP1 STEP2 STEP3; do
+        require_kernel_opcode "$softmax_sass" softmax_m8 \
+            "$boundary_start"'HMMA[.]884[.]F32[.]F32[.]'"$step""$boundary_end" 4
+    done
+    require_kernel_opcode "$softmax_sass" softmax_m8 "$any_hmma" 16
+    require_kernel_opcode "$softmax_sass" softmax_m8 "$boundary_start"'LDSM[.]' 0
+    require_kernel_opcode "$softmax_sass" softmax_m8 \
+        "$boundary_start"'SHFL[.]BFLY'"$boundary_end" 24
+done
+reject_pattern "$build_dir/softmax-backend-sm70.ptx" 'ldmatrix|m16n8k8|m16n8k16' \
+    "SM75+ softmax instruction"
+reject_pattern "$build_dir/softmax-backend-sm70.sass" 'HMMA[.]1688|LDSM' \
+    "SM75+ softmax SASS"
+require_ptx_kernel_opcode "$build_dir/softmax-backend-sm75.ptx" softmax_m16 "$ptx_m16" 4
+require_ptx_kernel_opcode "$build_dir/softmax-backend-sm75.ptx" softmax_m16 "$ptx_m8" 0
+require_ptx_kernel_opcode "$build_dir/softmax-backend-sm75.ptx" softmax_m16 'wmma[.]' 0
+require_ptx_kernel_opcode "$build_dir/softmax-backend-sm75.ptx" softmax_m16 "$ptx_x2" 2
+require_ptx_kernel_opcode "$build_dir/softmax-backend-sm75.ptx" softmax_m16 "$ptx_x1" 4
+require_ptx_kernel_opcode "$build_dir/softmax-backend-sm75.ptx" softmax_m16 'ldmatrix[.].*[.]trans' 0
+require_ptx_kernel_opcode "$build_dir/softmax-backend-sm75.ptx" softmax_m16 "$ptx_shfl" 32
+require_kernel_opcode "$build_dir/softmax-backend-sm75.sass" softmax_m16 \
+    "$boundary_start"'HMMA[.]1688[.]F32'"$boundary_end" 4
+require_kernel_opcode "$build_dir/softmax-backend-sm75.sass" softmax_m16 "$any_hmma" 4
+require_kernel_opcode "$build_dir/softmax-backend-sm75.sass" softmax_m16 "$boundary_start"'LDSM[.]' 6
+require_kernel_opcode "$build_dir/softmax-backend-sm75.sass" softmax_m16 \
+    "$boundary_start"'SHFL[.]BFLY'"$boundary_end" 32
 
 echo "codegen gate: PASS"

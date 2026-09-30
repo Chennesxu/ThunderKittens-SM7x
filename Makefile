@@ -9,6 +9,9 @@ SM75_FLAGS := -DKITTENS_SM75 -gencode arch=compute_75,code=sm_75
 PTX_MMA_FLAGS := -DKITTENS_MMA_PTX
 PTX_REDUCE_OPS := include/tk_sm7x/row_reduce_ops.cuh
 
+.PHONY: build-softmax-backend-sm70 build-softmax-backend-sm75 test-softmax-backend-sm75 sanitize-softmax-backend-sm75
+all: build-softmax-backend-sm70 build-softmax-backend-sm75
+
 .PHONY: all check-numerical-bounds check-arch check-codegen build-mma-sm70 build-mma-sm75 test-mma-sm75 build-sm70 build-sm75 test-sm75 sanitize-sm75 build-ptx-sm70 build-ptx-sm75 test-ptx-sm75 sanitize-ptx-sm75 build-bench-sm75 bench-sm75 build-bench-ptx-sm75 bench-ptx-sm75 build-layout-sm70 build-layout-sm75 test-layout-sm75 build-ldmatrix-sm75 test-ldmatrix-sm75 build-ptx-mma-sm70 build-ptx-mma-sm75 test-ptx-mma-sm75 sanitize-ptx-mma-sm75 build-differential-sm70 build-differential-sm75 build-differential-ptx-sm70 build-differential-ptx-sm75 test-differential-sm75 test-differential-ptx-sm75 sanitize-differential-sm75 sanitize-differential-ptx-sm75 build-row-reduce-sm70 build-row-reduce-sm75 test-row-reduce-sm75 sanitize-row-reduce-sm75 build-tile-reduce-sm70 build-tile-reduce-sm75 build-tile-reduce-ptx-sm70 build-tile-reduce-ptx-sm75 test-tile-reduce-sm75 test-tile-reduce-ptx-sm75 sanitize-tile-reduce-sm75 sanitize-tile-reduce-ptx-sm75 build-example-row-stats-sm70 build-example-row-stats-sm75 build-example-row-stats-ptx-sm70 build-example-row-stats-ptx-sm75 example-row-stats-sm75 example-row-stats-ptx-sm75 build-bench-row-reduce-sm75 bench-row-reduce-sm75 clean
 
 all: check-numerical-bounds check-arch check-codegen build-mma-sm70 build-mma-sm75 build-layout-sm70 build-layout-sm75 build-ldmatrix-sm75 build-ptx-mma-sm70 build-ptx-mma-sm75 build-sm70 build-sm75 build-ptx-sm70 build-ptx-sm75 build-differential-sm70 build-differential-sm75 build-differential-ptx-sm70 build-differential-ptx-sm75 build-row-reduce-sm70 build-row-reduce-sm75 build-tile-reduce-sm70 build-tile-reduce-sm75 build-tile-reduce-ptx-sm70 build-tile-reduce-ptx-sm75 build-example-row-stats-sm70 build-example-row-stats-sm75 build-example-row-stats-ptx-sm70 build-example-row-stats-ptx-sm75
@@ -276,6 +279,30 @@ example-row-stats-ptx-sm75: build-example-row-stats-ptx-sm75
 	exit $$status
 
 build-row-reduce-sm70: $(BUILD_DIR)/row-reduce-sm70
+
+SOFTMAX_BACKEND_HEADERS := tests/test_utils.cuh include/tk_sm7x/arch.cuh \
+	include/tk_sm7x/ptx_backend.cuh include/tk_sm7x/ptx_ldmatrix.cuh \
+	include/tk_sm7x/ptx_mma.cuh $(PTX_REDUCE_OPS)
+
+$(BUILD_DIR)/softmax-backend-sm70: tests/softmax_backend.cu $(SOFTMAX_BACKEND_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM70_FLAGS) tests/softmax_backend.cu -o $@
+
+$(BUILD_DIR)/softmax-backend-sm75: tests/softmax_backend.cu $(SOFTMAX_BACKEND_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) tests/softmax_backend.cu -o $@
+
+build-softmax-backend-sm70: $(BUILD_DIR)/softmax-backend-sm70
+
+build-softmax-backend-sm75: $(BUILD_DIR)/softmax-backend-sm75
+
+test-softmax-backend-sm75: build-softmax-backend-sm75
+	@status=0; "$(BUILD_DIR)/softmax-backend-sm75" || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: backend softmax SM75 runtime validation pending (binary exit 77)"; exit 0; fi; \
+	exit $$status
+
+sanitize-softmax-backend-sm75: build-softmax-backend-sm75
+	@status=0; BUILD_DIR="$(BUILD_DIR)" bash tests/run_sanitizers.sh softmax-backend || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: backend softmax SM75 sanitizer validation pending (script exit 77)"; exit 0; fi; \
+	exit $$status
 
 build-row-reduce-sm75: $(BUILD_DIR)/row-reduce-sm75
 

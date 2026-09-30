@@ -50,6 +50,12 @@ case "$selector" in
         memcheck_api=(--report-api-errors no)
         pass_message="Row reduce SM75 sanitizers: PASS"
         ;;
+    softmax-backend)
+        sanitizer_test="$build_dir/softmax-backend-sm75"
+        build_hint=build-softmax-backend-sm75
+        memcheck_api=()
+        pass_message="Backend softmax SM75 sanitizers: PASS"
+        ;;
     tile-reduce)
         sanitizer_test="$build_dir/tile-reduce-sm75"
         build_hint=build-tile-reduce-sm75
