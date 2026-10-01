@@ -326,6 +326,42 @@ example-row-stats-ptx-sm75: build-example-row-stats-ptx-sm75
 	if [[ $$status -eq 77 ]]; then echo "SKIP: PTX GEMM row statistics SM75 example pending (binary exit 77)"; exit 0; fi; \
 	exit $$status
 
+EXAMPLE_ROW_SOFTMAX_HEADERS := include/tk_sm7x/arch.cuh \
+	include/tk_sm7x/mma.cuh include/tk_sm7x/tile.cuh \
+	include/tk_sm7x/softmax.cuh include/tk_sm7x/row_reduce_ops.cuh \
+	include/tk_sm7x/ptx_backend.cuh include/tk_sm7x/ptx_ldmatrix.cuh \
+	include/tk_sm7x/ptx_mma.cuh
+
+.PHONY: build-example-row-softmax-sm70 build-example-row-softmax-sm75 build-example-row-softmax-ptx-sm70 build-example-row-softmax-ptx-sm75 example-row-softmax-sm75 example-row-softmax-ptx-sm75
+all: build-example-row-softmax-sm70 build-example-row-softmax-sm75 build-example-row-softmax-ptx-sm70 build-example-row-softmax-ptx-sm75
+
+$(BUILD_DIR)/example-row-softmax-sm70: examples/gemm_row_softmax.cu $(EXAMPLE_ROW_SOFTMAX_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) $(SM70_FLAGS) examples/gemm_row_softmax.cu -o $@
+
+$(BUILD_DIR)/example-row-softmax-sm75: examples/gemm_row_softmax.cu $(EXAMPLE_ROW_SOFTMAX_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) $(SM75_FLAGS) examples/gemm_row_softmax.cu -o $@
+
+$(BUILD_DIR)/example-row-softmax-ptx-sm70: examples/gemm_row_softmax.cu $(EXAMPLE_ROW_SOFTMAX_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) $(SM70_FLAGS) $(PTX_MMA_FLAGS) examples/gemm_row_softmax.cu -o $@
+
+$(BUILD_DIR)/example-row-softmax-ptx-sm75: examples/gemm_row_softmax.cu $(EXAMPLE_ROW_SOFTMAX_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) $(SM75_FLAGS) $(PTX_MMA_FLAGS) examples/gemm_row_softmax.cu -o $@
+
+build-example-row-softmax-sm70: $(BUILD_DIR)/example-row-softmax-sm70
+build-example-row-softmax-sm75: $(BUILD_DIR)/example-row-softmax-sm75
+build-example-row-softmax-ptx-sm70: $(BUILD_DIR)/example-row-softmax-ptx-sm70
+build-example-row-softmax-ptx-sm75: $(BUILD_DIR)/example-row-softmax-ptx-sm75
+
+example-row-softmax-sm75: build-example-row-softmax-sm75
+	@status=0; "$(BUILD_DIR)/example-row-softmax-sm75" || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: GEMM row softmax SM75 example pending (binary exit 77)"; exit 0; fi; \
+	exit $$status
+
+example-row-softmax-ptx-sm75: build-example-row-softmax-ptx-sm75
+	@status=0; "$(BUILD_DIR)/example-row-softmax-ptx-sm75" || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: PTX GEMM row softmax SM75 example pending (binary exit 77)"; exit 0; fi; \
+	exit $$status
+
 build-row-reduce-sm70: $(BUILD_DIR)/row-reduce-sm70
 
 SOFTMAX_BACKEND_HEADERS := tests/test_utils.cuh include/tk_sm7x/arch.cuh \

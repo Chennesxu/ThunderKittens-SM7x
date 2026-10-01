@@ -130,6 +130,21 @@ make sanitize-tile-softmax-sm75 sanitize-tile-softmax-ptx-sm75
 SM70 and CUDA 11.0 receive compile/codegen validation only; SM70 remains
 experimental. SM75 runtime exit 77 is SKIP.
 
+A self-checking [GEMM-to-row-softmax example](examples/gemm_row_softmax.cu)
+combines the public MMA and softmax tile operations in one warp, writes both
+the 16×16 FP32 logits and probabilities, and checks them against an independent
+host reference. It is a composition example, not an Attention kernel or a
+performance benchmark:
+
+```text
+make build-example-row-softmax-sm70 build-example-row-softmax-sm75
+make build-example-row-softmax-ptx-sm70 build-example-row-softmax-ptx-sm75
+make example-row-softmax-sm75 example-row-softmax-ptx-sm75
+```
+
+The SM70 builds are compile/codegen-only; a runtime check requires a selected
+SM75 device, and exit 77 is reported as SKIP.
+
 The differential GEMM driver runs six exact-domain cases and ten model-domain
 cases: full-mantissa normal-FP16 inputs, including mixed normal exponents, plus
 the declared zero cases. It compares the WMMA, PTX m8, and (on SM75) PTX m16
