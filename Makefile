@@ -415,6 +415,23 @@ bench-row-reduce-sm75: build-bench-row-reduce-sm75
 	if [[ $$status -eq 77 ]]; then echo "SKIP: row reduce SM75 benchmark pending (binary exit 77)"; exit 0; fi; \
 	exit $$status
 
+.PHONY: build-bench-row-softmax-sm75 bench-row-softmax-sm75
+
+$(BUILD_DIR)/row-softmax-throughput-sm75: bench/row_softmax_throughput.cu \
+		tests/test_utils.cuh include/tk_sm7x/arch.cuh \
+		include/tk_sm7x/mma.cuh include/tk_sm7x/ptx_backend.cuh \
+		include/tk_sm7x/ptx_ldmatrix.cuh include/tk_sm7x/ptx_mma.cuh \
+		include/tk_sm7x/row_reduce_ops.cuh | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) \
+		bench/row_softmax_throughput.cu -o $@
+
+build-bench-row-softmax-sm75: $(BUILD_DIR)/row-softmax-throughput-sm75
+
+bench-row-softmax-sm75: build-bench-row-softmax-sm75
+	@status=0; "$(BUILD_DIR)/row-softmax-throughput-sm75" || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: row softmax SM75 benchmark pending (binary exit 77)"; exit 0; fi; \
+	exit $$status
+
 $(BUILD_DIR)/gemm-throughput-sm75: bench/gemm_throughput.cu tests/test_utils.cuh src/gemm.cu include/tk_sm7x/arch.cuh include/tk_sm7x/mma.cuh include/tk_sm7x/tile.cuh include/tk_sm7x/gemm.cuh | $(BUILD_DIR)
 	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) src/gemm.cu bench/gemm_throughput.cu -o $@
 
