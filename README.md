@@ -146,13 +146,16 @@ The SM70 builds are compile/codegen-only; a runtime check requires a selected
 SM75 device, and exit 77 is reported as SKIP.
 
 The optional `make bench-row-softmax-sm75` benchmark compares WMMA shared
-fallback with PTX m8/m16 register and matched shared-reference paths. It
-checks a nontrivial output fingerprint before timing, then reports elapsed
+fallback, a benchmark-only two-lanes-per-row WMMA candidate, and PTX m8/m16
+register and matched shared-reference paths. It checks the WMMA candidate's
+256 outputs against the scalar path and an independent host reference, then
+checks a nontrivial output fingerprint before timing and reports elapsed
 event time divided by completed warps for an identical K=16 staging/MMA prefix,
 four alternating rounds and one warp per block. The numbers include that
 prefix, output publication, resource effects and scheduling; they are not
 isolated softmax latency or end-to-end application performance. It retains
-ordinary `expf` and division.
+ordinary `expf` and division. The two-lane candidate does not change the
+public `row_softmax` implementation.
 
 The differential GEMM driver runs six exact-domain cases and ten model-domain
 cases: full-mantissa normal-FP16 inputs, including mixed normal exponents, plus

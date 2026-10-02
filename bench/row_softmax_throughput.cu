@@ -21,10 +21,11 @@ constexpr int kTile = 16;
 constexpr int kCells = kTile * kTile;
 constexpr unsigned int kBlocks = 1u << 14;
 constexpr double kChecksumBound = 0.05;
+constexpr double kProbabilityBound = 512.0 * 0x1p-23;
 constexpr int kWarmupIterations = 2;
 constexpr int kTimedIterations = 8;
 constexpr int kRounds = 4;
-constexpr int kMeasurementCount = 5;
+constexpr int kMeasurementCount = 6;
 
 using tk_sm7x::test::cuda_ok;
 
@@ -36,8 +37,8 @@ int numerator_b(int row, int col) {
     return (row * 7 + col * 2) % 11 - 5;
 }
 
-double expected_checksum() {
-    double checksum = 0.0;
+std::array<double, kCells> reference_probabilities() {
+    std::array<double, kCells> probabilities{};
     for (int row = 0; row < kTile; ++row) {
         double logits[kTile];
         double maximum = -std::numeric_limits<double>::infinity();
@@ -57,8 +58,19 @@ double expected_checksum() {
             denominator += exponent[col];
         }
         for (int col = 0; col < kTile; ++col) {
+            probabilities[static_cast<std::size_t>(row) * kTile + col] =
+                exponent[col] / denominator;
+        }
+    }
+    return probabilities;
+}
+
+double expected_checksum(const std::array<double, kCells>& probabilities) {
+    double checksum = 0.0;
+    for (int row = 0; row < kTile; ++row) {
+        for (int col = 0; col < kTile; ++col) {
             const int weight = 1 + ((row * 7 + col * 11) % 31);
-            checksum += weight * exponent[col] / denominator;
+            checksum += weight * probabilities[static_cast<std::size_t>(row) * kTile + col];
         }
     }
     return checksum;
@@ -113,16 +125,7 @@ __device__ __forceinline__ void register_body(const __half* a, const __half* b, 
     publish(probabilities, out);
 }
 
-template <class Backend>
-__device__ __forceinline__ void shared_body(const __half* a, const __half* b, float* out) {
-    __shared__ __align__(32) __half shared_a[kCells];
-    __shared__ __align__(32) __half shared_b[kCells];
-    __shared__ __align__(32) float probabilities[kCells];
-    __shared__ __align__(32) float scratch[kCells];
-    typename Backend::accumulator accumulator;
-    prologue<Backend>(a, b, accumulator, shared_a, shared_b);
-    Backend::store(scratch, accumulator, kTile);
-    __syncwarp(0xffffffffu);
+__device__ __forceinline__ void scalar_softmax(float* probabilities, const float* scratch) {
     const int lane = static_cast<int>(threadIdx.x) % 32;
     if (lane < kTile) {
         const std::size_t row_offset = static_cast<std::size_t>(lane) * kTile;
@@ -140,6 +143,52 @@ __device__ __forceinline__ void shared_body(const __half* a, const __half* b, fl
         }
     }
     __syncwarp(0xffffffffu);
+}
+
+template <class Op>
+__device__ __forceinline__ float balanced_half_reduce(const float* values) {
+    const float low = Op::apply(Op::apply(values[0], values[1]),
+                                Op::apply(values[2], values[3]));
+    const float high = Op::apply(Op::apply(values[4], values[5]),
+                                 Op::apply(values[6], values[7]));
+    return Op::apply(low, high);
+}
+
+__device__ __forceinline__ void two_lane_softmax(float* probabilities, const float* scratch) {
+    const int lane = static_cast<int>(threadIdx.x) % 32;
+    const int row = lane / 2;
+    const int half = lane % 2;
+    const std::size_t offset = static_cast<std::size_t>(row) * kTile + half * 8;
+    const float* values = scratch + offset;
+    const float half_max = balanced_half_reduce<tk_sm7x::detail::row_max_op>(values);
+    const float other_max = __shfl_xor_sync(0xffffffffu, half_max, 1);
+    const float maximum = half == 0
+        ? tk_sm7x::detail::row_max_op::apply(half_max, other_max)
+        : tk_sm7x::detail::row_max_op::apply(other_max, half_max);
+    float exponent[8];
+#pragma unroll
+    for (int col = 0; col < 8; ++col) exponent[col] = expf(values[col] - maximum);
+    const float half_sum = balanced_half_reduce<tk_sm7x::detail::row_sum_op>(exponent);
+    const float other_sum = __shfl_xor_sync(0xffffffffu, half_sum, 1);
+    const float denominator = half == 0 ? half_sum + other_sum : other_sum + half_sum;
+#pragma unroll
+    for (int col = 0; col < 8; ++col) {
+        probabilities[offset + col] = exponent[col] / denominator;
+    }
+    __syncwarp(0xffffffffu);
+}
+
+template <class Backend>
+__device__ __forceinline__ void shared_body(const __half* a, const __half* b, float* out) {
+    __shared__ __align__(32) __half shared_a[kCells];
+    __shared__ __align__(32) __half shared_b[kCells];
+    __shared__ __align__(32) float probabilities[kCells];
+    __shared__ __align__(32) float scratch[kCells];
+    typename Backend::accumulator accumulator;
+    prologue<Backend>(a, b, accumulator, shared_a, shared_b);
+    Backend::store(scratch, accumulator, kTile);
+    __syncwarp(0xffffffffu);
+    scalar_softmax(probabilities, scratch);
     publish(probabilities, out);
 }
 
@@ -149,6 +198,19 @@ using backend_m16 = tk_sm7x::detail::ptx_warp_mma_f16_f16_f32_16x16x16<tk_sm7x::
 
 __global__ void softmax_shared_wmma(const __half* a, const __half* b, float* out) {
     shared_body<backend_wmma>(a, b, out);
+}
+
+__global__ void softmax_shared_wmma_two_lane(const __half* a, const __half* b, float* out) {
+    __shared__ __align__(32) __half shared_a[kCells];
+    __shared__ __align__(32) __half shared_b[kCells];
+    __shared__ __align__(32) float probabilities[kCells];
+    __shared__ __align__(32) float scratch[kCells];
+    backend_wmma::accumulator accumulator;
+    prologue<backend_wmma>(a, b, accumulator, shared_a, shared_b);
+    backend_wmma::store(scratch, accumulator, kTile);
+    __syncwarp(0xffffffffu);
+    two_lane_softmax(probabilities, scratch);
+    publish(probabilities, out);
 }
 
 __global__ void softmax_shared_m8(const __half* a, const __half* b, float* out) {
@@ -165,6 +227,34 @@ __global__ void softmax_shared_m16(const __half* a, const __half* b, float* out)
 
 __global__ void softmax_register_m16(const __half* a, const __half* b, float* out) {
     register_body<backend_m16>(a, b, out);
+}
+
+__global__ void softmax_values_shared_wmma(const __half* a, const __half* b, float* values) {
+    __shared__ __align__(32) __half shared_a[kCells];
+    __shared__ __align__(32) __half shared_b[kCells];
+    __shared__ __align__(32) float probabilities[kCells];
+    __shared__ __align__(32) float scratch[kCells];
+    backend_wmma::accumulator accumulator;
+    prologue<backend_wmma>(a, b, accumulator, shared_a, shared_b);
+    backend_wmma::store(scratch, accumulator, kTile);
+    __syncwarp(0xffffffffu);
+    scalar_softmax(probabilities, scratch);
+    const int lane = static_cast<int>(threadIdx.x) % 32;
+    for (int index = lane; index < kCells; index += 32) values[index] = probabilities[index];
+}
+
+__global__ void softmax_values_two_lane(const __half* a, const __half* b, float* values) {
+    __shared__ __align__(32) __half shared_a[kCells];
+    __shared__ __align__(32) __half shared_b[kCells];
+    __shared__ __align__(32) float probabilities[kCells];
+    __shared__ __align__(32) float scratch[kCells];
+    backend_wmma::accumulator accumulator;
+    prologue<backend_wmma>(a, b, accumulator, shared_a, shared_b);
+    backend_wmma::store(scratch, accumulator, kTile);
+    __syncwarp(0xffffffffu);
+    two_lane_softmax(probabilities, scratch);
+    const int lane = static_cast<int>(threadIdx.x) % 32;
+    for (int index = lane; index < kCells; index += 32) values[index] = probabilities[index];
 }
 
 using kernel_pointer = void (*)(const __half*, const __half*, float*);
@@ -206,6 +296,64 @@ bool measure(const Measurement& measurement, const __half* a, const __half* b,
     *nanoseconds_per_warp =
         static_cast<double>(milliseconds) * 1.0e6 / (kBlocks * kTimedIterations);
     return std::isfinite(*nanoseconds_per_warp) && *nanoseconds_per_warp > 0.0;
+}
+
+bool validate_two_lane(const __half* a, const __half* b,
+                       const std::array<double, kCells>& reference) {
+    float* scalar = nullptr;
+    float* candidate = nullptr;
+    const auto release = [&]() {
+        bool ok = true;
+        if (scalar != nullptr) ok = cuda_ok(cudaFree(scalar), "cudaFree(scalar)") && ok;
+        if (candidate != nullptr) ok = cuda_ok(cudaFree(candidate), "cudaFree(candidate)") && ok;
+        return ok;
+    };
+    const std::size_t bytes = kCells * sizeof(float);
+    bool ok = cuda_ok(cudaMalloc(reinterpret_cast<void**>(&scalar), bytes),
+                      "cudaMalloc(scalar)") &&
+              cuda_ok(cudaMalloc(reinterpret_cast<void**>(&candidate), bytes),
+                      "cudaMalloc(candidate)");
+    if (ok) {
+        ok = cuda_ok(cudaMemset(scalar, 0xff, bytes), "cudaMemset(scalar)") && ok;
+        ok = cuda_ok(cudaMemset(candidate, 0xff, bytes), "cudaMemset(candidate)") && ok;
+        softmax_values_shared_wmma<<<1, 32>>>(a, b, scalar);
+        softmax_values_two_lane<<<1, 32>>>(a, b, candidate);
+        ok = cuda_ok(cudaGetLastError(), "value launches") && ok;
+        ok = cuda_ok(cudaDeviceSynchronize(), "value synchronize") && ok;
+    }
+    std::array<float, kCells> host_scalar{};
+    std::array<float, kCells> host_candidate{};
+    if (ok) {
+        ok = cuda_ok(cudaMemcpy(host_scalar.data(), scalar, bytes, cudaMemcpyDeviceToHost),
+                     "cudaMemcpy(scalar)") && ok;
+        ok = cuda_ok(cudaMemcpy(host_candidate.data(), candidate, bytes, cudaMemcpyDeviceToHost),
+                     "cudaMemcpy(candidate)") && ok;
+    }
+    if (ok) {
+        for (int index = 0; index < kCells; ++index) {
+            const double want = reference[index];
+            const float control = host_scalar[index];
+            const float got = host_candidate[index];
+            if (!std::isfinite(control) ||
+                std::fabs(static_cast<double>(control) - want) > kProbabilityBound) {
+                std::fprintf(stderr, "WMMA scalar cell=%d got=%.17g want=%.17g\n",
+                             index, static_cast<double>(control), want);
+                ok = false;
+                break;
+            }
+            if (!std::isfinite(got) ||
+                std::fabs(static_cast<double>(got) - want) > kProbabilityBound ||
+                got != control) {
+                std::fprintf(stderr, "WMMA two-lane cell=%d got=%.17g scalar=%.17g want=%.17g\n",
+                             index, static_cast<double>(got), static_cast<double>(control), want);
+                ok = false;
+                break;
+            }
+        }
+    }
+    if (ok) std::printf("WMMA two-lane 256/256: PASS exact-scalar and CPU-bound\n");
+    const bool released = release();
+    return ok && released;
 }
 
 }  // namespace
@@ -255,12 +403,18 @@ int main() {
 
     const Measurement measurements[] = {
         {"wmma shared", softmax_shared_wmma},
+        {"wmma two-lane", softmax_shared_wmma_two_lane},
         {"m8 shared", softmax_shared_m8},
         {"m8 register", softmax_register_m8},
         {"m16 shared", softmax_shared_m16},
         {"m16 register", softmax_register_m16},
     };
-    const double expected = expected_checksum();
+    const auto reference = reference_probabilities();
+    if (!validate_two_lane(a, b, reference)) {
+        static_cast<void>(release());
+        return EXIT_FAILURE;
+    }
+    const double expected = expected_checksum(reference);
     bool ok = true;
     for (const auto& measurement : measurements) {
         ok = cuda_ok(cudaMemset(out, 0xff, kBlocks * sizeof(float)),
@@ -303,8 +457,9 @@ int main() {
             std::printf("%-14s median=%8.4f range=[%8.4f,%8.4f] amortized ns/warp\n",
                         measurements[index].name, median[index], sorted.front(), sorted.back());
         }
-        std::printf("m8 shared/register median ratio %.4f\n", median[1] / median[2]);
-        std::printf("m16 shared/register median ratio %.4f\n", median[3] / median[4]);
+        std::printf("wmma shared/two-lane median ratio %.4f\n", median[0] / median[1]);
+        std::printf("m8 shared/register median ratio %.4f\n", median[2] / median[3]);
+        std::printf("m16 shared/register median ratio %.4f\n", median[4] / median[5]);
         std::printf("row softmax throughput: %u warps x %d iterations x %d rounds, "
                     "K=%d, one warp per block, identical backend-pair prologue\n",
                     kBlocks, kTimedIterations, kRounds, kTile);
