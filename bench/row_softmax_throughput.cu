@@ -14,6 +14,7 @@
 #include "tk_sm7x/mma.cuh"
 #include "tk_sm7x/ptx_backend.cuh"
 #include "tk_sm7x/row_reduce_ops.cuh"
+#include "tk_sm7x/softmax.cuh"
 
 namespace {
 
@@ -145,39 +146,6 @@ __device__ __forceinline__ void scalar_softmax(float* probabilities, const float
     __syncwarp(0xffffffffu);
 }
 
-template <class Op>
-__device__ __forceinline__ float balanced_half_reduce(const float* values) {
-    const float low = Op::apply(Op::apply(values[0], values[1]),
-                                Op::apply(values[2], values[3]));
-    const float high = Op::apply(Op::apply(values[4], values[5]),
-                                 Op::apply(values[6], values[7]));
-    return Op::apply(low, high);
-}
-
-__device__ __forceinline__ void two_lane_softmax(float* probabilities, const float* scratch) {
-    const int lane = static_cast<int>(threadIdx.x) % 32;
-    const int row = lane / 2;
-    const int half = lane % 2;
-    const std::size_t offset = static_cast<std::size_t>(row) * kTile + half * 8;
-    const float* values = scratch + offset;
-    const float half_max = balanced_half_reduce<tk_sm7x::detail::row_max_op>(values);
-    const float other_max = __shfl_xor_sync(0xffffffffu, half_max, 1);
-    const float maximum = half == 0
-        ? tk_sm7x::detail::row_max_op::apply(half_max, other_max)
-        : tk_sm7x::detail::row_max_op::apply(other_max, half_max);
-    float exponent[8];
-#pragma unroll
-    for (int col = 0; col < 8; ++col) exponent[col] = expf(values[col] - maximum);
-    const float half_sum = balanced_half_reduce<tk_sm7x::detail::row_sum_op>(exponent);
-    const float other_sum = __shfl_xor_sync(0xffffffffu, half_sum, 1);
-    const float denominator = half == 0 ? half_sum + other_sum : other_sum + half_sum;
-#pragma unroll
-    for (int col = 0; col < 8; ++col) {
-        probabilities[offset + col] = exponent[col] / denominator;
-    }
-    __syncwarp(0xffffffffu);
-}
-
 template <class Backend>
 __device__ __forceinline__ void shared_body(const __half* a, const __half* b, float* out) {
     __shared__ __align__(32) __half shared_a[kCells];
@@ -209,7 +177,7 @@ __global__ void softmax_shared_wmma_two_lane(const __half* a, const __half* b, f
     prologue<backend_wmma>(a, b, accumulator, shared_a, shared_b);
     backend_wmma::store(scratch, accumulator, kTile);
     __syncwarp(0xffffffffu);
-    two_lane_softmax(probabilities, scratch);
+    tk_sm7x::detail::shared_softmax_two_lane(probabilities, scratch);
     publish(probabilities, out);
 }
 
@@ -252,7 +220,7 @@ __global__ void softmax_values_two_lane(const __half* a, const __half* b, float*
     prologue<backend_wmma>(a, b, accumulator, shared_a, shared_b);
     backend_wmma::store(scratch, accumulator, kTile);
     __syncwarp(0xffffffffu);
-    two_lane_softmax(probabilities, scratch);
+    tk_sm7x::detail::shared_softmax_two_lane(probabilities, scratch);
     const int lane = static_cast<int>(threadIdx.x) % 32;
     for (int index = lane; index < kCells; index += 32) values[index] = probabilities[index];
 }

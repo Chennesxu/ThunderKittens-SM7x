@@ -8,7 +8,8 @@ SM70_FLAGS := -DKITTENS_SM70 -gencode arch=compute_70,code=sm_70
 SM75_FLAGS := -DKITTENS_SM75 -gencode arch=compute_75,code=sm_75
 PTX_MMA_FLAGS := -DKITTENS_MMA_PTX
 PTX_REDUCE_OPS := include/tk_sm7x/row_reduce_ops.cuh
-TILE_SOFTMAX_HEADERS := tests/test_utils.cuh include/tk_sm7x/softmax.cuh \
+TILE_SOFTMAX_HEADERS := tests/test_utils.cuh tests/row_reduce_reference.cuh \
+	include/tk_sm7x/softmax.cuh \
 	include/tk_sm7x/tile.cuh include/tk_sm7x/mma.cuh include/tk_sm7x/arch.cuh \
 	include/tk_sm7x/row_reduce_ops.cuh include/tk_sm7x/ptx_backend.cuh \
 	include/tk_sm7x/ptx_ldmatrix.cuh include/tk_sm7x/ptx_mma.cuh
@@ -420,6 +421,7 @@ bench-row-reduce-sm75: build-bench-row-reduce-sm75
 $(BUILD_DIR)/row-softmax-throughput-sm75: bench/row_softmax_throughput.cu \
 		tests/test_utils.cuh include/tk_sm7x/arch.cuh \
 		include/tk_sm7x/mma.cuh include/tk_sm7x/ptx_backend.cuh \
+		include/tk_sm7x/tile.cuh include/tk_sm7x/softmax.cuh \
 		include/tk_sm7x/ptx_ldmatrix.cuh include/tk_sm7x/ptx_mma.cuh \
 		include/tk_sm7x/row_reduce_ops.cuh | $(BUILD_DIR)
 	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) \

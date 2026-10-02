@@ -9,6 +9,7 @@
 #include <limits>
 #include <vector>
 
+#include "row_reduce_reference.cuh"
 #include "test_utils.cuh"
 #include "tk_sm7x/softmax.cuh"
 
@@ -18,8 +19,29 @@ constexpr int kCells = 256;
 constexpr int kOutputStride = 264;
 constexpr double kBound = 512.0 * 0x1p-23;
 
+__device__ void scalar_reference(
+    tk_sm7x::st<float, 16, 16, tk_sm7x::row_major>& destination,
+    const tk_sm7x::st<float, 16, 16, tk_sm7x::row_major>& source) {
+    const int lane = static_cast<int>(threadIdx.x) % 32;
+    if (lane < 16) {
+        const std::size_t offset = static_cast<std::size_t>(lane) * 16;
+        const float* row = source.data + offset;
+        const float maximum = tk_sm7x::test::canonical_row<tk_sm7x::detail::row_max_op>(row);
+        float exponent[16];
+#pragma unroll
+        for (int col = 0; col < 16; ++col) exponent[col] = expf(row[col] - maximum);
+        const float denominator =
+            tk_sm7x::test::canonical_row<tk_sm7x::detail::row_sum_op>(exponent);
+#pragma unroll
+        for (int col = 0; col < 16; ++col) {
+            destination.data[offset + col] = exponent[col] / denominator;
+        }
+    }
+    __syncwarp(0xffffffffu);
+}
+
 __device__ void normalize(const __half* a, int lda, int warps, float* before,
-                          float* after, float* output, float* repeated) {
+                          float* after, float* output, float* repeated, float* scalar) {
     const int lane = static_cast<int>(threadIdx.x) % 32;
     const int warp = static_cast<int>(threadIdx.x) / 32;
     const std::size_t group = static_cast<std::size_t>(blockIdx.x) * warps + warp;
@@ -27,6 +49,7 @@ __device__ void normalize(const __half* a, int lda, int warps, float* before,
     __shared__ __align__(32) tk_sm7x::st<__half, 16, 16, tk_sm7x::col_major> bs[4];
     __shared__ __align__(32) tk_sm7x::st<float, 16, 16, tk_sm7x::row_major> scratch[4];
     __shared__ __align__(32) tk_sm7x::st<float, 16, 16, tk_sm7x::row_major> dst[4];
+    __shared__ __align__(32) tk_sm7x::st<float, 16, 16, tk_sm7x::row_major> control[4];
     for (int i = lane; i < kCells; i += 32) {
         as[warp].data[i] = a[group * 16 * lda + static_cast<std::size_t>(i / 16) * lda + i % 16];
         bs[warp].data[i] = __float2half(i / 16 == i % 16 ? 1.0f : 0.0f);
@@ -44,6 +67,10 @@ __device__ void normalize(const __half* a, int lda, int warps, float* before,
     __syncwarp(0xffffffffu);
     for (int i = lane; i < kCells; i += 32) before[group * kCells + i] = scratch[warp].data[i];
     __syncwarp(0xffffffffu);
+    scalar_reference(control[warp], scratch[warp]);
+    for (int i = lane; i < kCells; i += 32) {
+        scalar[group * kOutputStride + 4 + i] = control[warp].data[i];
+    }
     tk_sm7x::row_softmax(dst[warp], cf, scratch[warp]);
     for (int i = lane; i < kCells; i += 32) {
         output[group * kOutputStride + 4 + i] = dst[warp].data[i];
@@ -61,8 +88,8 @@ __device__ void normalize(const __half* a, int lda, int warps, float* before,
 }  // namespace
 
 extern "C" __global__ void tile_softmax(const __half* a, int lda, int warps,
-    float* before, float* after, float* output, float* repeated) {
-    normalize(a, lda, warps, before, after, output, repeated);
+    float* before, float* after, float* output, float* repeated, float* scalar) {
+    normalize(a, lda, warps, before, after, output, repeated, scalar);
 }
 
 namespace {
@@ -71,6 +98,11 @@ float logits(int group, int row, int col, int kind) {
     if (kind == 1) return 0.0f;
     if (kind == 2) return (row % 2 == 0 ? 1000.0f : -1000.0f) +
         static_cast<float>(col + row + group) / 2.0f;
+    if (kind == 3) {
+        const int mantissa = 1024 + (137 * row + 79 * col + 53 * group) % 1024;
+        const int exponent = (row + 2 * col + group) % 7 - 3;
+        return std::ldexp(static_cast<float>(mantissa), exponent - 10);
+    }
     return static_cast<float>((5 * col + 3 * row + 7 * group) % 16 - 8) / 8.0f +
         static_cast<float>(row) / 2.0f + static_cast<float>(group) / 4.0f;
 }
@@ -88,18 +120,19 @@ bool run_case(const char* name, int kind, int warps, int blocks, int lda) {
     }
     __half* a = nullptr;
     float *before = nullptr, *after = nullptr, *output = nullptr, *repeated = nullptr;
+    float* scalar = nullptr;
     bool ok = tk_sm7x::test::cuda_ok(cudaMallocManaged(&a, host_a.size() * sizeof(__half)), "allocate A");
     for (float** p : {&before, &after}) {
         ok = tk_sm7x::test::cuda_ok(cudaMallocManaged(p, cells * sizeof(float)), "allocate logits") && ok;
     }
-    for (float** p : {&output, &repeated}) {
+    for (float** p : {&output, &repeated, &scalar}) {
         ok = tk_sm7x::test::cuda_ok(cudaMallocManaged(p, output_cells * sizeof(float)), "allocate output") && ok;
     }
     if (ok) {
         std::memcpy(a, host_a.data(), host_a.size() * sizeof(__half));
         for (float* p : {before, after}) for (std::size_t i = 0; i < cells; ++i) p[i] = std::numeric_limits<float>::quiet_NaN();
-        for (float* p : {output, repeated}) for (std::size_t i = 0; i < output_cells; ++i) p[i] = std::numeric_limits<float>::quiet_NaN();
-        tile_softmax<<<blocks, warps * 32>>>(a, lda, warps, before, after, output, repeated);
+        for (float* p : {output, repeated, scalar}) for (std::size_t i = 0; i < output_cells; ++i) p[i] = std::numeric_limits<float>::quiet_NaN();
+        tile_softmax<<<blocks, warps * 32>>>(a, lda, warps, before, after, output, repeated, scalar);
         ok = tk_sm7x::test::cuda_ok(cudaGetLastError(), "softmax launch") && ok;
         ok = tk_sm7x::test::cuda_ok(cudaDeviceSynchronize(), "softmax synchronize") && ok;
     }
@@ -126,10 +159,13 @@ bool run_case(const char* name, int kind, int warps, int blocks, int lda) {
                     const std::size_t i = static_cast<std::size_t>(g) * kOutputStride + 4 + r * 16 + c;
                     const double want = exponent[c] / sum;
                     const double error = std::fabs(static_cast<double>(output[i]) - want);
+                    const double scalar_error = std::fabs(static_cast<double>(scalar[i]) - want);
                     if (error > max_error) max_error = error;
                     if (!std::isfinite(output[i]) || output[i] < 0.0f || output[i] > 1.0f ||
-                        error > kBound || repeated[i] != output[i]) {
-                        std::fprintf(stderr, "%s softmax group=%d row=%d col=%d got=%.17g repeat=%.17g want=%.17g\n", name, g, r, c, static_cast<double>(output[i]), static_cast<double>(repeated[i]), want);
+                        error > kBound || repeated[i] != output[i] ||
+                        !std::isfinite(scalar[i]) || scalar_error > kBound ||
+                        output[i] != scalar[i]) {
+                        std::fprintf(stderr, "%s softmax group=%d row=%d col=%d got=%.17g repeat=%.17g scalar=%.17g want=%.17g\n", name, g, r, c, static_cast<double>(output[i]), static_cast<double>(repeated[i]), static_cast<double>(scalar[i]), want);
                         ok = false;
                     }
                     output_sum += output[i];
@@ -137,13 +173,13 @@ bool run_case(const char* name, int kind, int warps, int blocks, int lda) {
                 if (std::fabs(output_sum - 1.0) > kBound || !std::isfinite(output_sum)) ok = false;
             }
             const float sentinel = std::numeric_limits<float>::quiet_NaN();
-            for (float* p : {output, repeated}) for (int i : {0, 1, 2, 3, 260, 261, 262, 263}) {
+            for (float* p : {output, repeated, scalar}) for (int i : {0, 1, 2, 3, 260, 261, 262, 263}) {
                 if (std::memcmp(&p[static_cast<std::size_t>(g) * kOutputStride + i], &sentinel, sizeof(float)) != 0) ok = false;
             }
         }
         std::printf("%s %s warps=%d blocks=%d lda=%d: %s max-error=%.17g bound=%.17g\n", "public", name, warps, blocks, lda, ok ? "PASS" : "FAIL", max_error, kBound);
     }
-    for (void* p : {static_cast<void*>(a), static_cast<void*>(before), static_cast<void*>(after), static_cast<void*>(output), static_cast<void*>(repeated)}) {
+    for (void* p : {static_cast<void*>(a), static_cast<void*>(before), static_cast<void*>(after), static_cast<void*>(output), static_cast<void*>(repeated), static_cast<void*>(scalar)}) {
         if (p != nullptr) ok = tk_sm7x::test::cuda_ok(cudaFree(p), "cudaFree") && ok;
     }
     return ok;
@@ -160,6 +196,7 @@ int main() {
         ok = run_case("variable", 0, warps, 2, 24) && ok;
         ok = run_case("zeros", 1, warps, 2, 16) && ok;
         ok = run_case("large-offset", 2, warps, 2, 24) && ok;
+        ok = run_case("rounded", 3, warps, 2, 24) && ok;
     }
     return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

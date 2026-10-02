@@ -111,15 +111,18 @@ All 32 lanes call convergently in a one-dimensional CTA whose block size is
 divisible by 32. The output is row-major FP32, computed with maximum subtraction,
 CUDA `expf`, normal FP32 division and balanced column-order reductions. On return,
 the warp can read the output and reuse scratch; consumers in other warps or CTAs
-require caller synchronization. WMMA stores the opaque accumulator to scratch;
-the opt-in PTX path uses its backend register layout and warp shuffles.
+require caller synchronization. WMMA stores the opaque accumulator to scratch
+and splits each row across two lanes; the opt-in PTX path uses its backend
+register layout and warp shuffles.
 
 The [public correctness test](tests/tile_softmax.cu) uses FP16 scores times an
 identity matrix, verifies the exact accumulator logits, then compares with an
 independent binary64 softmax. Its predeclared absolute bound is `512 * 2^-23`
 for each probability and the row sum, only for these identity-MMA fixtures:
-position-distinguishable q/8 logits, zero rows and offsets near ±1000. This is
-neither a universal accuracy guarantee nor the GEMM model budget.
+position-distinguishable q/8 logits, zero rows, offsets near ±1000 and normal
+FP16 values with full mantissas. The test also checks all outputs against a
+separate scalar shared-memory evaluation of the canonical reduction tree.
+This is neither a universal accuracy guarantee nor the GEMM model budget.
 
 ```text
 make build-tile-softmax-sm70 build-tile-softmax-ptx-sm70
@@ -145,17 +148,18 @@ make example-row-softmax-sm75 example-row-softmax-ptx-sm75
 The SM70 builds are compile/codegen-only; a runtime check requires a selected
 SM75 device, and exit 77 is reported as SKIP.
 
-The optional `make bench-row-softmax-sm75` benchmark compares WMMA shared
-fallback, a benchmark-only two-lanes-per-row WMMA candidate, and PTX m8/m16
-register and matched shared-reference paths. It checks the WMMA candidate's
+The optional `make bench-row-softmax-sm75` benchmark compares a scalar WMMA
+shared reference, a separate two-lanes-per-row WMMA implementation matching
+the public path, and PTX m8/m16 register and matched shared-reference paths.
+It checks the two-lane implementation's
 256 outputs against the scalar path and an independent host reference, then
 checks a nontrivial output fingerprint before timing and reports elapsed
 event time divided by completed warps for an identical K=16 staging/MMA prefix,
 four alternating rounds and one warp per block. The numbers include that
 prefix, output publication, resource effects and scheduling; they are not
 isolated softmax latency or end-to-end application performance. It retains
-ordinary `expf` and division. The two-lane candidate does not change the
-public `row_softmax` implementation.
+ordinary `expf` and division. Benchmark measurements alone do not establish
+the public API's application-level speedup.
 
 The differential GEMM driver runs six exact-domain cases and ten model-domain
 cases: full-mantissa normal-FP16 inputs, including mixed normal exponents, plus

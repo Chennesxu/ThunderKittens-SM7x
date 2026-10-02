@@ -429,7 +429,7 @@ for label in sm70 sm75; do
     softmax_ptx="$build_dir/tile-softmax-ptx-$label.ptx"
     softmax_store='wmma[.]store[.]d[.]sync[.]aligned[.]row[.]m16n16k16([.]shared)?[.]f32'
     require_ptx_kernel_opcode "$softmax_wmma" tile_softmax "$softmax_store" 4
-    require_ptx_kernel_opcode "$softmax_wmma" tile_softmax "$ptx_shfl" 0
+    require_ptx_kernel_opcode "$softmax_wmma" tile_softmax "$ptx_shfl" 4
     require_ptx_kernel_opcode "$softmax_wmma" tile_softmax "$ptx_m8|$ptx_m16" 0
     require_ptx_kernel_opcode "$softmax_ptx" tile_softmax 'wmma[.]' 0
     if [[ "$label" == sm70 ]]; then
