@@ -381,7 +381,11 @@ compile_target tile-softmax tests/tile_softmax.cu sm70 KITTENS_SM70 compute_70 s
 compile_target tile-softmax tests/tile_softmax.cu sm75 KITTENS_SM75 compute_75 sm_75
 compile_target tile-softmax-ptx tests/tile_softmax.cu sm70 KITTENS_SM70 compute_70 sm_70 KITTENS_MMA_PTX
 compile_target tile-softmax-ptx tests/tile_softmax.cu sm75 KITTENS_SM75 compute_75 sm_75 KITTENS_MMA_PTX
-for prefix in differential row-reduce tile-reduce tile-reduce-ptx softmax-backend tile-softmax tile-softmax-ptx; do
+compile_target attention src/attention.cu sm70 KITTENS_SM70 compute_70 sm_70
+compile_target attention src/attention.cu sm75 KITTENS_SM75 compute_75 sm_75
+compile_target attention-ptx src/attention.cu sm70 KITTENS_SM70 compute_70 sm_70 KITTENS_MMA_PTX
+compile_target attention-ptx src/attention.cu sm75 KITTENS_SM75 compute_75 sm_75 KITTENS_MMA_PTX
+for prefix in differential row-reduce tile-reduce tile-reduce-ptx softmax-backend tile-softmax tile-softmax-ptx attention attention-ptx; do
     for label in sm70 sm75; do
         reject_pattern "$build_dir/$prefix-$label.ptx" "$forbidden_ptx" \
             "prohibited $prefix PTX instruction"
@@ -396,7 +400,7 @@ expect_layout_reject sm70 KITTENS_SM70 sm_70
 expect_layout_reject sm75 KITTENS_SM75 sm_75
 expect_ptx_backend_capability
 
-for prefix in ldmatrix ptx-backend mma gemm gemm-ptx differential row-reduce tile-reduce tile-reduce-ptx softmax-backend tile-softmax tile-softmax-ptx; do
+for prefix in ldmatrix ptx-backend mma gemm gemm-ptx differential row-reduce tile-reduce tile-reduce-ptx softmax-backend tile-softmax tile-softmax-ptx attention attention-ptx; do
     if [[ "$prefix" == ldmatrix ]]; then
         require_pattern "$build_dir/$prefix-sm75.ptx" '\.target[[:space:]]+sm_75' \
             "sm_75 target"
@@ -446,6 +450,41 @@ for label in sm70 sm75; do
 done
 reject_pattern "$build_dir/tile-softmax-ptx-sm70.sass" 'HMMA[.]1688|LDSM' \
     "SM75+ public softmax SASS"
+
+for label in sm70 sm75; do
+    for prefix in attention attention-ptx; do
+        attention_ptx="$build_dir/$prefix-$label.ptx"
+        attention_sass="$build_dir/$prefix-$label.sass"
+        attention_ptx_kernel=$(gemm_kernel_name "$attention_ptx" attention_kernel)
+        attention_sass_kernel=$(gemm_kernel_name "$attention_sass" attention_kernel)
+        if [[ "$prefix" == attention ]]; then
+            require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" \
+                'wmma[.]mma[.]sync[.]aligned[.]row[.]col[.]m16n16k16[.]f32[.]f32' 2
+            require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" \
+                "$ptx_m8|$ptx_m16" 0
+        elif [[ "$label" == sm70 ]]; then
+            require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" "$ptx_m8" 8
+            require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" \
+                "$ptx_m16|ldmatrix|wmma[.]" 0
+        else
+            require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" "$ptx_m16" 8
+            require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" "$ptx_m8|wmma[.]" 0
+            require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" "$ptx_x2" 4
+            require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" "$ptx_x1" 8
+            require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" \
+                'ldmatrix[.].*[.]trans' 0
+        fi
+        if [[ "$label" == sm70 ]]; then
+            require_kernel_opcode "$attention_sass" "$attention_sass_kernel" "$any_hmma" 32
+        else
+            require_kernel_opcode "$attention_sass" "$attention_sass_kernel" "$any_hmma" 8
+        fi
+    done
+done
+reject_pattern "$build_dir/attention-sm70.sass" 'HMMA[.]1688|LDSM' \
+    "SM75+ Attention SASS"
+reject_pattern "$build_dir/attention-ptx-sm70.sass" 'HMMA[.]1688|LDSM' \
+    "SM75+ PTX Attention SASS"
 
 for label in sm70 sm75; do
     wmma_ptx="$build_dir/tile-reduce-$label.ptx"

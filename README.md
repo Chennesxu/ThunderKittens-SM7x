@@ -12,7 +12,7 @@ This repository aims to maintain a small, architecture-specific implementation f
 2. Provide architecture-specific backends built around each target's native Tensor Core instructions and memory hierarchy.
 3. Implement pipelines and synchronization paths that do not depend on `cp.async`, TMA, or other SM80+ features.
 4. Keep a common high-level API across SM70 and SM75 while making hardware capability differences explicit.
-5. Provide tested building blocks and examples for custom kernels, beginning with GEMM and later expanding to attention workloads.
+5. Provide tested building blocks and examples for custom kernels, beginning with GEMM and a fixed Attention tile.
 6. Maintain a stable CUDA 11+ codebase for legacy GPU users as upstream development continues toward newer architectures.
 7. Improve hardware coverage through community testing, especially for V100 and TITAN V systems not available to the maintainer.
 
@@ -147,6 +147,44 @@ make example-row-softmax-sm75 example-row-softmax-ptx-sm75
 
 The SM70 builds are compile/codegen-only; a runtime check requires a selected
 SM75 device, and exit 77 is reported as SKIP.
+
+### Fixed 16×16 Attention forward
+
+`tk_sm7x/attention.cuh` provides one asynchronous, fixed-size operation:
+
+```cpp
+cudaError_t status = tk_sm7x::attention_forward_16x16(q, k, v, out, stream);
+```
+
+Q, K and V are contiguous row-major 16×16 FP16 matrices indexed by token and
+feature; `out` is a separate contiguous row-major 16×16 FP32 matrix. The three
+read-only inputs may share storage. All storage must be device-accessible and
+alive through stream completion; before then, input modification and output
+access require ordering with this call on the supplied stream. Null pointers
+return `cudaErrorInvalidValue`; a successful return covers validation and
+launch, while execution errors surface at later synchronization.
+
+One warp computes `softmax(QKᵀ / 4) V`: it stages K as a logical transpose,
+uses FP32 accumulation and stable row softmax, rounds the FP32 probabilities
+to FP16 nearest-even, then performs a second FP16-input/FP32-accumulation MMA.
+That probability conversion is part of this API's numerical behavior. The
+focused test checks independent staged references and declared bounds for its
+fixtures; it does not establish universal accuracy versus ideal binary64
+Attention. Masks, tails, batching, arbitrary shapes, dropout and backward are
+not supported.
+
+```text
+make build-attention-sm70 build-attention-sm75
+make build-attention-ptx-sm70 build-attention-ptx-sm75
+make test-attention-sm75 test-attention-ptx-sm75
+bash tests/run_sanitizers.sh attention
+bash tests/run_sanitizers.sh attention-ptx
+```
+
+The default build uses WMMA; `KITTENS_MMA_PTX` opts into the architecture PTX
+backend. SM75 runtime correctness is tested on TITAN RTX; SM70 and CUDA 11.0
+have compile/codegen evidence only. Exit 77 means the SM75 runtime check was
+skipped, not passed. No end-to-end performance claim is made.
 
 The optional `make bench-row-softmax-sm75` benchmark compares a scalar WMMA
 shared reference, a separate two-lanes-per-row WMMA implementation matching

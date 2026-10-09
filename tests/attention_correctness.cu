@@ -3,8 +3,10 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 
 #include "test_utils.cuh"
@@ -130,11 +132,21 @@ Reference make_reference(const __half* q, const __half* k, const __half* v) {
     return reference;
 }
 
+double positive_half_value(std::uint16_t bits) {
+    const int exponent = static_cast<int>((bits >> 10u) & 31u);
+    const int fraction = static_cast<int>(bits & 1023u);
+    return exponent == 0 ? std::ldexp(static_cast<double>(fraction), -24)
+                         : std::ldexp(static_cast<double>(1024 + fraction), exponent - 25);
+}
+
 double midpoint_margin(double probability, __half rounded) {
-    const unsigned int bits = __half_as_ushort(rounded);
+    static_assert(sizeof(__half) == sizeof(std::uint16_t), "FP16 storage must be 16 bits");
+    std::uint16_t bits = 0;
+    std::memcpy(&bits, &rounded, sizeof(bits));
     const double value = static_cast<double>(__half2float(rounded));
-    const double lower = static_cast<double>(__half2float(__ushort_as_half(bits - 1u)));
-    const double upper = static_cast<double>(__half2float(__ushort_as_half(bits + 1u)));
+    if (positive_half_value(bits) != value) return 0.0;
+    const double lower = positive_half_value(static_cast<std::uint16_t>(bits - 1u));
+    const double upper = positive_half_value(static_cast<std::uint16_t>(bits + 1u));
     return std::fmin(std::fabs(probability - (lower + value) / 2.0),
                      std::fabs(probability - (value + upper) / 2.0));
 }
