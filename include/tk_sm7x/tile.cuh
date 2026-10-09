@@ -139,6 +139,10 @@ __device__ __forceinline__ void zero(rt_c& dst) {
     detail::active_warp_mma::clear(dst.value);
 }
 
+__device__ __forceinline__ void scale(rt_c& dst, float factor) {
+    detail::active_warp_mma::scale(dst.value, factor);
+}
+
 __device__ __forceinline__ void mma(rt_c& dst, const rt_a& a, const rt_b& b) {
     detail::active_warp_mma::mma(dst.value, a.value, b.value);
 }

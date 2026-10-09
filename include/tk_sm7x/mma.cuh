@@ -47,6 +47,13 @@ struct warp_mma_f16_f16_f32_16x16x16 {
         nvcuda::wmma::fill_fragment(acc.value, 0.0f);
     }
 
+    __device__ static __forceinline__ void scale(accumulator& acc, float factor) {
+#pragma unroll
+        for (int i = 0; i < acc.value.num_elements; ++i) {
+            acc.value.x[i] *= factor;
+        }
+    }
+
     __device__ static __forceinline__ void mma(
         accumulator& acc, const fragment_a& a, const fragment_b& b) {
         nvcuda::wmma::mma_sync(acc.value, a.value, b.value, acc.value);

@@ -477,6 +477,39 @@ sanitize-ptx-sm75: build-ptx-sm75
 	if [[ $$status -eq 77 ]]; then echo "SKIP: PTX GEMM SM75 sanitizer validation pending (script exit 77)"; exit 0; fi; \
 	exit $$status
 
+.PHONY: build-tile-scale-sm70 build-tile-scale-sm75 build-tile-scale-ptx-sm70 build-tile-scale-ptx-sm75 test-tile-scale-sm75 test-tile-scale-ptx-sm75
+all: build-tile-scale-sm70 build-tile-scale-sm75 build-tile-scale-ptx-sm70 build-tile-scale-ptx-sm75
+
+$(BUILD_DIR)/tile-scale-sm70: tests/tile_scale.cu $(TILE_SOFTMAX_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM70_FLAGS) tests/tile_scale.cu -o $@
+
+build-tile-scale-sm70: $(BUILD_DIR)/tile-scale-sm70
+
+$(BUILD_DIR)/tile-scale-sm75: tests/tile_scale.cu $(TILE_SOFTMAX_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) tests/tile_scale.cu -o $@
+
+build-tile-scale-sm75: $(BUILD_DIR)/tile-scale-sm75
+
+$(BUILD_DIR)/tile-scale-ptx-sm70: tests/tile_scale.cu $(TILE_SOFTMAX_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM70_FLAGS) $(PTX_MMA_FLAGS) tests/tile_scale.cu -o $@
+
+build-tile-scale-ptx-sm70: $(BUILD_DIR)/tile-scale-ptx-sm70
+
+$(BUILD_DIR)/tile-scale-ptx-sm75: tests/tile_scale.cu $(TILE_SOFTMAX_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) $(PTX_MMA_FLAGS) tests/tile_scale.cu -o $@
+
+build-tile-scale-ptx-sm75: $(BUILD_DIR)/tile-scale-ptx-sm75
+
+test-tile-scale-sm75: build-tile-scale-sm75
+	@status=0; "$(BUILD_DIR)/tile-scale-sm75" || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: tile scale SM75 runtime validation pending (binary exit 77)"; exit 0; fi; \
+	exit $$status
+
+test-tile-scale-ptx-sm75: build-tile-scale-ptx-sm75
+	@status=0; "$(BUILD_DIR)/tile-scale-ptx-sm75" || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: PTX tile scale SM75 runtime validation pending (binary exit 77)"; exit 0; fi; \
+	exit $$status
+
 clean:
 	@test "$(BUILD_DIR)" = "$(ROOT_DIR)/build"
 	rm -rf -- "$(ROOT_DIR)/build"

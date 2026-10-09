@@ -127,6 +127,13 @@ public:
         }
     }
 
+    __device__ static __forceinline__ void scale(accumulator& destination, float factor) {
+#pragma unroll
+        for (int reg = 0; reg < 8; ++reg) {
+            destination.value[reg] *= factor;
+        }
+    }
+
     __device__ static __forceinline__ void mma(
         accumulator& destination, const fragment_a& a, const fragment_b& b) {
 #pragma unroll
@@ -248,6 +255,16 @@ struct ptx_warp_mma_f16_f16_f32_16x16x16<arch::sm75> {
 #pragma unroll
             for (int reg = 0; reg < 4; ++reg) {
                 destination.value[nh][reg] = 0.0f;
+            }
+        }
+    }
+
+    __device__ static __forceinline__ void scale(accumulator& destination, float factor) {
+#pragma unroll
+        for (int nh = 0; nh < 2; ++nh) {
+#pragma unroll
+            for (int reg = 0; reg < 4; ++reg) {
+                destination.value[nh][reg] *= factor;
             }
         }
     }
