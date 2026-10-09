@@ -510,6 +510,40 @@ test-tile-scale-ptx-sm75: build-tile-scale-ptx-sm75
 	if [[ $$status -eq 77 ]]; then echo "SKIP: PTX tile scale SM75 runtime validation pending (binary exit 77)"; exit 0; fi; \
 	exit $$status
 
+.PHONY: build-attention-sm70 build-attention-sm75 build-attention-ptx-sm70 build-attention-ptx-sm75 test-attention-sm75 test-attention-ptx-sm75
+all: build-attention-sm70 build-attention-sm75 build-attention-ptx-sm70 build-attention-ptx-sm75
+ATTENTION_HEADERS := $(TILE_SOFTMAX_HEADERS) include/tk_sm7x/attention.cuh
+
+$(BUILD_DIR)/attention-sm70: src/attention.cu tests/attention_correctness.cu $(ATTENTION_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM70_FLAGS) src/attention.cu tests/attention_correctness.cu -o $@
+
+build-attention-sm70: $(BUILD_DIR)/attention-sm70
+
+$(BUILD_DIR)/attention-sm75: src/attention.cu tests/attention_correctness.cu $(ATTENTION_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) src/attention.cu tests/attention_correctness.cu -o $@
+
+build-attention-sm75: $(BUILD_DIR)/attention-sm75
+
+$(BUILD_DIR)/attention-ptx-sm70: src/attention.cu tests/attention_correctness.cu $(ATTENTION_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM70_FLAGS) $(PTX_MMA_FLAGS) src/attention.cu tests/attention_correctness.cu -o $@
+
+build-attention-ptx-sm70: $(BUILD_DIR)/attention-ptx-sm70
+
+$(BUILD_DIR)/attention-ptx-sm75: src/attention.cu tests/attention_correctness.cu $(ATTENTION_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) $(PTX_MMA_FLAGS) src/attention.cu tests/attention_correctness.cu -o $@
+
+build-attention-ptx-sm75: $(BUILD_DIR)/attention-ptx-sm75
+
+test-attention-sm75: build-attention-sm75
+	@status=0; "$(BUILD_DIR)/attention-sm75" || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: fixed Attention SM75 runtime validation pending (binary exit 77)"; exit 0; fi; \
+	exit $$status
+
+test-attention-ptx-sm75: build-attention-ptx-sm75
+	@status=0; "$(BUILD_DIR)/attention-ptx-sm75" || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: PTX fixed Attention SM75 runtime validation pending (binary exit 77)"; exit 0; fi; \
+	exit $$status
+
 clean:
 	@test "$(BUILD_DIR)" = "$(ROOT_DIR)/build"
 	rm -rf -- "$(ROOT_DIR)/build"
