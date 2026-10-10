@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cfloat>
 #include <cmath>
 #include <cstddef>
 
@@ -61,6 +62,23 @@ __device__ __forceinline__ void row_softmax(
     __syncwarp(0xffffffffu);
     detail::shared_softmax_two_lane(dst.data, scratch.data);
 #endif
+}
+
+// All lanes of one warp call convergently with finite logits and distinct
+// warp-private shared dst/scratch tiles. Column j>row i has zero probability;
+// the source accumulator is unchanged. Return synchronizes the calling warp.
+__device__ __forceinline__ void row_softmax_causal(
+    st<float, 16, 16, row_major>& dst, const rt_c& logits,
+    st<float, 16, 16, row_major>& scratch) {
+    store(scratch, logits);
+    __syncwarp(0xffffffffu);
+#pragma unroll
+    for (int linear = static_cast<int>(threadIdx.x % 32u);
+         linear < 256; linear += 32) {
+        if (linear % 16 > linear / 16) scratch.data[linear] = -FLT_MAX;
+    }
+    __syncwarp(0xffffffffu);
+    detail::shared_softmax_two_lane(dst.data, scratch.data);
 }
 
 }  // namespace tk_sm7x

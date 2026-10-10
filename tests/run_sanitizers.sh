@@ -68,6 +68,18 @@ case "$selector" in
         memcheck_api=()
         pass_message="PTX tile softmax SM75 sanitizers: PASS"
         ;;
+    tile-causal-softmax)
+        sanitizer_test="$build_dir/tile-causal-softmax-sm75"
+        build_hint=build-tile-causal-softmax-sm75
+        memcheck_api=()
+        pass_message="Causal tile softmax SM75 sanitizers: PASS"
+        ;;
+    tile-causal-softmax-ptx)
+        sanitizer_test="$build_dir/tile-causal-softmax-ptx-sm75"
+        build_hint=build-tile-causal-softmax-ptx-sm75
+        memcheck_api=()
+        pass_message="PTX causal tile softmax SM75 sanitizers: PASS"
+        ;;
     attention)
         sanitizer_test="$build_dir/attention-sm75"
         build_hint=build-attention-sm75

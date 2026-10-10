@@ -544,6 +544,39 @@ test-attention-ptx-sm75: build-attention-ptx-sm75
 	if [[ $$status -eq 77 ]]; then echo "SKIP: PTX fixed Attention SM75 runtime validation pending (binary exit 77)"; exit 0; fi; \
 	exit $$status
 
+.PHONY: build-tile-causal-softmax-sm70 build-tile-causal-softmax-sm75 build-tile-causal-softmax-ptx-sm70 build-tile-causal-softmax-ptx-sm75 test-tile-causal-softmax-sm75 test-tile-causal-softmax-ptx-sm75
+all: build-tile-causal-softmax-sm70 build-tile-causal-softmax-sm75 build-tile-causal-softmax-ptx-sm70 build-tile-causal-softmax-ptx-sm75
+
+$(BUILD_DIR)/tile-causal-softmax-sm70: tests/tile_causal_softmax.cu $(TILE_SOFTMAX_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM70_FLAGS) tests/tile_causal_softmax.cu -o $@
+
+build-tile-causal-softmax-sm70: $(BUILD_DIR)/tile-causal-softmax-sm70
+
+$(BUILD_DIR)/tile-causal-softmax-sm75: tests/tile_causal_softmax.cu $(TILE_SOFTMAX_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) tests/tile_causal_softmax.cu -o $@
+
+build-tile-causal-softmax-sm75: $(BUILD_DIR)/tile-causal-softmax-sm75
+
+$(BUILD_DIR)/tile-causal-softmax-ptx-sm70: tests/tile_causal_softmax.cu $(TILE_SOFTMAX_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM70_FLAGS) $(PTX_MMA_FLAGS) tests/tile_causal_softmax.cu -o $@
+
+build-tile-causal-softmax-ptx-sm70: $(BUILD_DIR)/tile-causal-softmax-ptx-sm70
+
+$(BUILD_DIR)/tile-causal-softmax-ptx-sm75: tests/tile_causal_softmax.cu $(TILE_SOFTMAX_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) $(PTX_MMA_FLAGS) tests/tile_causal_softmax.cu -o $@
+
+build-tile-causal-softmax-ptx-sm75: $(BUILD_DIR)/tile-causal-softmax-ptx-sm75
+
+test-tile-causal-softmax-sm75: build-tile-causal-softmax-sm75
+	@status=0; "$(BUILD_DIR)/tile-causal-softmax-sm75" || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: causal tile softmax SM75 runtime validation pending (binary exit 77)"; exit 0; fi; \
+	exit $$status
+
+test-tile-causal-softmax-ptx-sm75: build-tile-causal-softmax-ptx-sm75
+	@status=0; "$(BUILD_DIR)/tile-causal-softmax-ptx-sm75" || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: PTX causal tile softmax SM75 runtime validation pending (binary exit 77)"; exit 0; fi; \
+	exit $$status
+
 clean:
 	@test "$(BUILD_DIR)" = "$(ROOT_DIR)/build"
 	rm -rf -- "$(ROOT_DIR)/build"
