@@ -133,6 +133,19 @@ make sanitize-tile-softmax-sm75 sanitize-tile-softmax-ptx-sm75
 SM70 and CUDA 11.0 receive compile/codegen validation only; SM70 remains
 experimental. SM75 runtime exit 77 is SKIP.
 
+`row_softmax_causal(probabilities, c_tile, scratch)` has the same tile and
+warp contract, but row `i` normalizes only columns `0..i` and writes zero
+above the diagonal. Both backends use the shared-memory path for this
+position-dependent operation. The focused test checks an independent prefix
+softmax, strict masked zeros and unchanged accumulator values:
+
+```text
+make build-tile-causal-softmax-sm70 build-tile-causal-softmax-ptx-sm70
+make test-tile-causal-softmax-sm75 test-tile-causal-softmax-ptx-sm75
+bash tests/run_sanitizers.sh tile-causal-softmax
+bash tests/run_sanitizers.sh tile-causal-softmax-ptx
+```
+
 A self-checking [GEMM-to-row-softmax example](examples/gemm_row_softmax.cu)
 combines the public MMA and softmax tile operations in one warp, writes both
 the 16×16 FP32 logits and probabilities, and checks them against an independent
@@ -150,10 +163,12 @@ SM75 device, and exit 77 is reported as SKIP.
 
 ### Fixed 16×16 Attention forward
 
-`tk_sm7x/attention.cuh` provides one asynchronous, fixed-size operation:
+`tk_sm7x/attention.cuh` provides two asynchronous, fixed-size operations:
 
 ```cpp
 cudaError_t status = tk_sm7x::attention_forward_16x16(q, k, v, out, stream);
+cudaError_t causal_status =
+    tk_sm7x::attention_forward_16x16_causal(q, k, v, out_causal, stream);
 ```
 
 Q, K and V are contiguous row-major 16×16 FP16 matrices indexed by token and
@@ -167,11 +182,14 @@ launch, while execution errors surface at later synchronization.
 One warp computes `softmax(QKᵀ / 4) V`: it stages K as a logical transpose,
 uses FP32 accumulation and stable row softmax, rounds the FP32 probabilities
 to FP16 nearest-even, then performs a second FP16-input/FP32-accumulation MMA.
-That probability conversion is part of this API's numerical behavior. The
-focused test checks independent staged references and declared bounds for its
-fixtures; it does not establish universal accuracy versus ideal binary64
-Attention. Masks, tails, batching, arbitrary shapes, dropout and backward are
-not supported.
+The causal entry uses the same data flow but sets probabilities for key tokens
+`j>i` to zero in query row `i`, normalizing over `0..i` only. Its first row
+therefore selects `V[0,*]`; its last row has no masked tokens. Both entries
+use RN-even FP16 probability conversion as part of their numerical behavior.
+The focused tests check independent staged references and declared bounds for
+their fixtures; they do not establish universal accuracy versus ideal binary64
+Attention. Arbitrary masks, tails, batching, arbitrary shapes, dropout and
+backward are not supported.
 
 ```text
 make build-attention-sm70 build-attention-sm75
@@ -180,6 +198,8 @@ make test-attention-sm75 test-attention-ptx-sm75
 bash tests/run_sanitizers.sh attention
 bash tests/run_sanitizers.sh attention-ptx
 ```
+
+Each Attention test binary exercises both the unmasked and causal entries.
 
 The default build uses WMMA; `KITTENS_MMA_PTX` opts into the architecture PTX
 backend. SM75 runtime correctness is tested on TITAN RTX; SM70 and CUDA 11.0

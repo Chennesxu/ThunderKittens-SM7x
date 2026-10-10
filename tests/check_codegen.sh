@@ -455,30 +455,33 @@ for label in sm70 sm75; do
     for prefix in attention attention-ptx; do
         attention_ptx="$build_dir/$prefix-$label.ptx"
         attention_sass="$build_dir/$prefix-$label.sass"
-        attention_ptx_kernel=$(gemm_kernel_name "$attention_ptx" attention_kernel)
-        attention_sass_kernel=$(gemm_kernel_name "$attention_sass" attention_kernel)
-        if [[ "$prefix" == attention ]]; then
-            require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" \
-                'wmma[.]mma[.]sync[.]aligned[.]row[.]col[.]m16n16k16[.]f32[.]f32' 2
-            require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" \
-                "$ptx_m8|$ptx_m16" 0
-        elif [[ "$label" == sm70 ]]; then
-            require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" "$ptx_m8" 8
-            require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" \
-                "$ptx_m16|ldmatrix|wmma[.]" 0
-        else
-            require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" "$ptx_m16" 8
-            require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" "$ptx_m8|wmma[.]" 0
-            require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" "$ptx_x2" 4
-            require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" "$ptx_x1" 8
-            require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" \
-                'ldmatrix[.].*[.]trans' 0
-        fi
-        if [[ "$label" == sm70 ]]; then
-            require_kernel_opcode "$attention_sass" "$attention_sass_kernel" "$any_hmma" 32
-        else
-            require_kernel_opcode "$attention_sass" "$attention_sass_kernel" "$any_hmma" 8
-        fi
+        for mode in 0 1; do
+            attention_signature="attention_kernelILb${mode}EE"
+            attention_ptx_kernel=$(gemm_kernel_name "$attention_ptx" "$attention_signature")
+            attention_sass_kernel=$(gemm_kernel_name "$attention_sass" "$attention_signature")
+            if [[ "$prefix" == attention ]]; then
+                require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" \
+                    'wmma[.]mma[.]sync[.]aligned[.]row[.]col[.]m16n16k16[.]f32[.]f32' 2
+                require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" \
+                    "$ptx_m8|$ptx_m16" 0
+            elif [[ "$label" == sm70 ]]; then
+                require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" "$ptx_m8" 8
+                require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" \
+                    "$ptx_m16|ldmatrix|wmma[.]" 0
+            else
+                require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" "$ptx_m16" 8
+                require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" "$ptx_m8|wmma[.]" 0
+                require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" "$ptx_x2" 4
+                require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" "$ptx_x1" 8
+                require_ptx_kernel_opcode "$attention_ptx" "$attention_ptx_kernel" \
+                    'ldmatrix[.].*[.]trans' 0
+            fi
+            if [[ "$label" == sm70 ]]; then
+                require_kernel_opcode "$attention_sass" "$attention_sass_kernel" "$any_hmma" 32
+            else
+                require_kernel_opcode "$attention_sass" "$attention_sass_kernel" "$any_hmma" 8
+            fi
+        done
     done
 done
 reject_pattern "$build_dir/attention-sm70.sass" 'HMMA[.]1688|LDSM' \

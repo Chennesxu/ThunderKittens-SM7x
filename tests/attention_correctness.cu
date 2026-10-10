@@ -94,7 +94,8 @@ struct Reference {
     double out[kCells];
 };
 
-Reference make_reference(const __half* q, const __half* k, const __half* v) {
+Reference make_reference(const __half* q, const __half* k, const __half* v,
+                         bool causal = false) {
     Reference reference{};
     for (int row = 0; row < kWidth; ++row) {
         double scores[kWidth];
@@ -106,12 +107,18 @@ Reference make_reference(const __half* q, const __half* k, const __half* v) {
                        static_cast<double>(__half2float(k[cell(token, feature)]));
             }
             scores[token] = dot * 0.25;
-            if (scores[token] > maximum) maximum = scores[token];
+            if ((!causal || token <= row) && scores[token] > maximum) {
+                maximum = scores[token];
+            }
         }
         double denominator = 0.0;
         for (int token = 0; token < kWidth; ++token) {
-            scores[token] = std::exp(scores[token] - maximum);
-            denominator += scores[token];
+            if (causal && token > row) {
+                scores[token] = 0.0;
+            } else {
+                scores[token] = std::exp(scores[token] - maximum);
+                denominator += scores[token];
+            }
         }
         for (int token = 0; token < kWidth; ++token) {
             const std::size_t index = cell(row, token);
@@ -153,7 +160,8 @@ double midpoint_margin(double probability, __half rounded) {
 
 bool check_output(const char* name, const Data& data, const __half* v,
                   const Reference& reference, bool exact_uniform,
-                  bool midpoint_favored, bool exact_large) {
+                  bool midpoint_favored, bool exact_large,
+                  bool causal, bool identity_v) {
     if (data.guard_before != kGuardBefore || data.guard_after != kGuardAfter) {
         std::fprintf(stderr, "%s output guard changed\n", name);
         return false;
@@ -170,7 +178,8 @@ bool check_output(const char* name, const Data& data, const __half* v,
             const double got = static_cast<double>(data.out[index]);
             const double want = reference.out[index];
             const bool require_exact = exact_uniform || exact_large ||
-                (midpoint_favored && row == col);
+                (midpoint_favored && row == col) || (causal && row == 0) ||
+                (causal && identity_v && col > row);
             if (midpoint_favored && row == col &&
                 midpoint_margin(reference.probability[index],
                                 reference.rounded_probability[index]) <= kSoftmaxBound) {
@@ -193,8 +202,9 @@ bool check_output(const char* name, const Data& data, const __half* v,
 
 bool run_case(const char* name, Data* data, const __half* q, const __half* k,
               const __half* v, cudaStream_t stream, bool exact_uniform,
-              bool midpoint_favored, bool exact_large, bool stale_error) {
-    const Reference reference = make_reference(q, k, v);
+              bool midpoint_favored, bool exact_large, bool stale_error,
+              bool causal = false, bool identity_v = false) {
+    const Reference reference = make_reference(q, k, v, causal);
     reset_output(data);
     if (stale_error) {
         seed_stale_launch_error<<<0, 1>>>();
@@ -203,30 +213,33 @@ bool run_case(const char* name, Data* data, const __half* q, const __half* k,
             return false;
         }
     }
-    if (!tk_sm7x::test::cuda_ok(
-            tk_sm7x::attention_forward_16x16(q, k, v, data->out, stream),
-            "attention_forward_16x16")) return false;
+    const cudaError_t launched = causal
+        ? tk_sm7x::attention_forward_16x16_causal(q, k, v, data->out, stream)
+        : tk_sm7x::attention_forward_16x16(q, k, v, data->out, stream);
+    if (!tk_sm7x::test::cuda_ok(launched, "attention forward launch")) return false;
     if (!tk_sm7x::test::cuda_ok(cudaStreamSynchronize(stream),
                                 "cudaStreamSynchronize")) return false;
     return check_output(name, *data, v, reference, exact_uniform,
-                        midpoint_favored, exact_large);
+                        midpoint_favored, exact_large, causal, identity_v);
 }
 
-bool check_null_arguments(Data* data, cudaStream_t stream) {
+bool check_null_arguments(Data* data, cudaStream_t stream, bool causal = false) {
     const __half* inputs[3] = {data->q, data->k, data->v};
     for (int missing = 0; missing < 4; ++missing) {
-        const cudaError_t status = tk_sm7x::attention_forward_16x16(
-            missing == 0 ? nullptr : inputs[0],
-            missing == 1 ? nullptr : inputs[1],
-            missing == 2 ? nullptr : inputs[2],
-            missing == 3 ? nullptr : data->out, stream);
+        const __half* q = missing == 0 ? nullptr : inputs[0];
+        const __half* k = missing == 1 ? nullptr : inputs[1];
+        const __half* v = missing == 2 ? nullptr : inputs[2];
+        float* out = missing == 3 ? nullptr : data->out;
+        const cudaError_t status = causal
+            ? tk_sm7x::attention_forward_16x16_causal(q, k, v, out, stream)
+            : tk_sm7x::attention_forward_16x16(q, k, v, out, stream);
         if (status != cudaErrorInvalidValue) {
             std::fprintf(stderr, "null argument %d returned %s\n",
                          missing, cudaGetErrorString(status));
             return false;
         }
     }
-    std::printf("null arguments: PASS\n");
+    std::printf("%snull arguments: PASS\n", causal ? "causal " : "");
     return true;
 }
 
@@ -255,6 +268,10 @@ int main() {
     fill_shifted_one_hot(data, true);
     ok = run_case("shifted K, identity V", data, data->q, data->k, data->v,
                   stream, false, true, false, false) && ok;
+    float unmasked_last_row[kWidth];
+    for (int col = 0; col < kWidth; ++col) {
+        unmasked_last_row[col] = data->out[cell(kWidth - 1, col)];
+    }
 
     fill_shifted_one_hot(data, false);
     ok = run_case("shifted K, asymmetric V", data, data->q, data->k, data->v,
@@ -267,6 +284,44 @@ int main() {
     fill_alias_input(data);
     ok = run_case("aliased Q/K/V", data, data->q, data->q, data->q,
                   stream, false, false, false, false) && ok;
+
+    fill_uniform(data);
+    ok = check_null_arguments(data, stream, true) && ok;
+    ok = run_case("causal uniform scores", data, data->q, data->k, data->v,
+                  stream, false, false, false, true, true) && ok;
+
+    fill_shifted_one_hot(data, true);
+    const bool causal_identity = run_case("causal shifted K, identity V",
+        data, data->q, data->k, data->v, stream,
+        false, false, false, false, true, true);
+    ok = causal_identity && ok;
+    if (causal_identity) {
+        for (int col = 0; col < kWidth; ++col) {
+            const double got = static_cast<double>(data->out[cell(kWidth - 1, col)]);
+            const double prior = static_cast<double>(unmasked_last_row[col]);
+            const double bound = kSoftmaxBound + 0x1p-11 + kGamma32;
+            if (!std::isfinite(prior) || std::fabs(got - prior) > bound) {
+                std::fprintf(stderr, "causal last row %d got=%.17g noncausal=%.17g\n",
+                             col, got, prior);
+                ok = false;
+            }
+        }
+    }
+
+    fill_shifted_one_hot(data, false);
+    ok = run_case("causal shifted K, asymmetric V", data,
+                  data->q, data->k, data->v, stream,
+                  false, false, false, false, true) && ok;
+
+    fill_large_scores(data);
+    ok = run_case("causal large finite scores", data,
+                  data->q, data->k, data->v, stream,
+                  false, false, true, false, true, true) && ok;
+
+    fill_alias_input(data);
+    ok = run_case("causal aliased Q/K/V", data,
+                  data->q, data->q, data->q, stream,
+                  false, false, false, false, true) && ok;
 
     ok = tk_sm7x::test::cuda_ok(cudaStreamDestroy(stream), "cudaStreamDestroy") && ok;
     ok = tk_sm7x::test::cuda_ok(cudaFree(data), "cudaFree(data)") && ok;

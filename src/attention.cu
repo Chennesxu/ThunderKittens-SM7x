@@ -7,6 +7,7 @@
 namespace tk_sm7x {
 namespace {
 
+template <bool Causal>
 __global__ void attention_kernel(const __half* q, const __half* k,
                                  const __half* v, float* out) {
     __shared__ st<__half, 16, 16, row_major> shared_q;
@@ -33,7 +34,11 @@ __global__ void attention_kernel(const __half* q, const __half* k,
     zero(scores);
     mma(scores, q_tile, k_tile);
     scale(scores, 0.25f);
-    row_softmax(probabilities, scores, scratch);
+    if constexpr (Causal) {
+        row_softmax_causal(probabilities, scores, scratch);
+    } else {
+        row_softmax(probabilities, scores, scratch);
+    }
 
 #pragma unroll
     for (int linear = static_cast<int>(threadIdx.x); linear < 256; linear += 32) {
@@ -54,17 +59,30 @@ __global__ void attention_kernel(const __half* q, const __half* k,
     store_block<32>(gl<float>{out, 16, 16, 16}, scratch, 0, 0);
 }
 
-}  // namespace
-
-cudaError_t attention_forward_16x16(
+template <bool Causal>
+cudaError_t launch_attention(
     const __half* q, const __half* k, const __half* v,
     float* out, cudaStream_t stream) {
     if (q == nullptr || k == nullptr || v == nullptr || out == nullptr) {
         return cudaErrorInvalidValue;
     }
     static_cast<void>(cudaGetLastError());
-    attention_kernel<<<1, 32, 0, stream>>>(q, k, v, out);
+    attention_kernel<Causal><<<1, 32, 0, stream>>>(q, k, v, out);
     return cudaGetLastError();
+}
+
+}  // namespace
+
+cudaError_t attention_forward_16x16(
+    const __half* q, const __half* k, const __half* v,
+    float* out, cudaStream_t stream) {
+    return launch_attention<false>(q, k, v, out, stream);
+}
+
+cudaError_t attention_forward_16x16_causal(
+    const __half* q, const __half* k, const __half* v,
+    float* out, cudaStream_t stream) {
+    return launch_attention<true>(q, k, v, out, stream);
 }
 
 }  // namespace tk_sm7x

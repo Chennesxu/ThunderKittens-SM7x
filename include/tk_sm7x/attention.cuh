@@ -16,4 +16,10 @@ cudaError_t attention_forward_16x16(
     const __half* q, const __half* k, const __half* v,
     float* out, cudaStream_t stream = nullptr);
 
+// Same storage, stream and error contract as attention_forward_16x16.
+// Output row i attends only to key/value tokens 0..i.
+cudaError_t attention_forward_16x16_causal(
+    const __half* q, const __half* k, const __half* v,
+    float* out, cudaStream_t stream = nullptr);
+
 }  // namespace tk_sm7x
