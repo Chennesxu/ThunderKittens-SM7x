@@ -1,6 +1,7 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#include <cfloat>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -24,7 +25,7 @@ struct Data {
     float probability[kCells];
 };
 
-__global__ void tile_causal_softmax_kernel(Data* data) {
+__global__ void tile_causal_softmax_kernel(Data* data, float factor) {
     __shared__ tk_sm7x::st<__half, 16, 16, tk_sm7x::row_major> shared_a;
     __shared__ tk_sm7x::st<__half, 16, 16, tk_sm7x::col_major> shared_identity;
     __shared__ tk_sm7x::st<float, 16, 16, tk_sm7x::row_major> shared_before;
@@ -45,6 +46,7 @@ __global__ void tile_causal_softmax_kernel(Data* data) {
     tk_sm7x::load(b, shared_identity, 0);
     tk_sm7x::zero(logits);
     tk_sm7x::mma(logits, a, b);
+    tk_sm7x::scale(logits, factor);
     tk_sm7x::store(shared_before, logits);
     __syncwarp(0xffffffffu);
     tk_sm7x::row_softmax_causal(shared_probability, logits, scratch);
@@ -63,26 +65,27 @@ std::size_t cell(int row, int col) {
     return static_cast<std::size_t>(row) * kWidth + col;
 }
 
-double logit(int row, int col) {
-    return static_cast<double>((3 * row + 5 * col) % 13 - 6) / 8.0;
+double logit(int row, int col, bool extreme) {
+    return extreme ? -static_cast<double>(FLT_MAX)
+                   : static_cast<double>((3 * row + 5 * col) % 13 - 6) / 8.0;
 }
 
-bool check(const Data& data) {
+bool check(const Data& data, bool extreme) {
     for (int row = 0; row < kWidth; ++row) {
         double maximum = -std::numeric_limits<double>::infinity();
         for (int col = 0; col <= row; ++col) {
-            maximum = std::fmax(maximum, logit(row, col));
+            maximum = std::fmax(maximum, logit(row, col, extreme));
         }
         double denominator = 0.0;
         for (int col = 0; col <= row; ++col) {
-            denominator += std::exp(logit(row, col) - maximum);
+            denominator += std::exp(logit(row, col, extreme) - maximum);
         }
         double sum = 0.0;
         for (int col = 0; col < kWidth; ++col) {
             const std::size_t index = cell(row, col);
             const double got = static_cast<double>(data.probability[index]);
             const double want = col <= row
-                ? std::exp(logit(row, col) - maximum) / denominator : 0.0;
+                ? std::exp(logit(row, col, extreme) - maximum) / denominator : 0.0;
             if (!std::isfinite(got) ||
                 (col > row ? got != 0.0 : std::fabs(got - want) > kBound)) {
                 std::fprintf(stderr,
@@ -91,7 +94,7 @@ bool check(const Data& data) {
                 return false;
             }
             if (!std::isfinite(data.before[index]) ||
-                data.before[index] != static_cast<float>(logit(row, col)) ||
+                data.before[index] != static_cast<float>(logit(row, col, extreme)) ||
                 data.after[index] != data.before[index]) {
                 std::fprintf(stderr, "causal source changed or unwritten at [%d,%d]\n",
                              row, col);
@@ -107,6 +110,27 @@ bool check(const Data& data) {
     return true;
 }
 
+bool run_case(Data* data, bool extreme) {
+    for (int row = 0; row < kWidth; ++row) {
+        for (int col = 0; col < kWidth; ++col) {
+            const std::size_t index = cell(row, col);
+            data->a[index] = __float2half_rn(extreme
+                ? -1.0f : static_cast<float>(logit(row, col, false)));
+            data->identity[index] = __float2half_rn(row == col ? 1.0f : 0.0f);
+            data->before[index] = std::numeric_limits<float>::quiet_NaN();
+            data->after[index] = std::numeric_limits<float>::quiet_NaN();
+            data->probability[index] = std::numeric_limits<float>::quiet_NaN();
+        }
+    }
+
+    tile_causal_softmax_kernel<<<1, 32>>>(data, extreme ? FLT_MAX : 1.0f);
+    bool ok = tk_sm7x::test::cuda_ok(cudaGetLastError(),
+                                      "tile_causal_softmax_kernel launch");
+    ok = tk_sm7x::test::cuda_ok(cudaDeviceSynchronize(),
+                                "cudaDeviceSynchronize") && ok;
+    return ok && check(*data, extreme);
+}
+
 }  // namespace
 
 int main() {
@@ -117,23 +141,8 @@ int main() {
     Data* data = nullptr;
     if (!tk_sm7x::test::cuda_ok(cudaMallocManaged(&data, sizeof(Data)),
                                 "cudaMallocManaged(data)")) return EXIT_FAILURE;
-    for (int row = 0; row < kWidth; ++row) {
-        for (int col = 0; col < kWidth; ++col) {
-            const std::size_t index = cell(row, col);
-            data->a[index] = __float2half_rn(static_cast<float>(logit(row, col)));
-            data->identity[index] = __float2half_rn(row == col ? 1.0f : 0.0f);
-            data->before[index] = std::numeric_limits<float>::quiet_NaN();
-            data->after[index] = std::numeric_limits<float>::quiet_NaN();
-            data->probability[index] = std::numeric_limits<float>::quiet_NaN();
-        }
-    }
-
-    tile_causal_softmax_kernel<<<1, 32>>>(data);
-    bool ok = tk_sm7x::test::cuda_ok(cudaGetLastError(),
-                                      "tile_causal_softmax_kernel launch");
-    ok = tk_sm7x::test::cuda_ok(cudaDeviceSynchronize(),
-                                "cudaDeviceSynchronize") && ok;
-    if (ok) ok = check(*data);
+    bool ok = run_case(data, false);
+    ok = run_case(data, true) && ok;
     ok = tk_sm7x::test::cuda_ok(cudaFree(data), "cudaFree(data)") && ok;
     if (ok) std::printf("causal tile softmax: PASS ordinal=%d\n", ordinal);
     return ok ? EXIT_SUCCESS : EXIT_FAILURE;

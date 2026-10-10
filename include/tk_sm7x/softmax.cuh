@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cfloat>
 #include <cmath>
 #include <cstddef>
 
@@ -75,7 +74,7 @@ __device__ __forceinline__ void row_softmax_causal(
 #pragma unroll
     for (int linear = static_cast<int>(threadIdx.x % 32u);
          linear < 256; linear += 32) {
-        if (linear % 16 > linear / 16) scratch.data[linear] = -FLT_MAX;
+        if (linear % 16 > linear / 16) scratch.data[linear] = -INFINITY;
     }
     __syncwarp(0xffffffffu);
     detail::shared_softmax_two_lane(dst.data, scratch.data);
