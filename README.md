@@ -201,6 +201,22 @@ bash tests/run_sanitizers.sh attention-ptx
 
 Each Attention test binary exercises both the unmasked and causal entries.
 
+An optional fixed-tile benchmark calls both public entries on the same
+non-symmetric Q/K and asymmetric V fixture. It checks every output against an
+independent staged host reference before timing, then reports four-round median
+and range in amortized CUDA-event microseconds per call, plus reciprocal tile
+throughput:
+
+```text
+make build-bench-attention-sm70 build-bench-attention-ptx-sm70
+make bench-attention-sm75 bench-attention-ptx-sm75
+```
+
+Each call launches one warp for one 16×16 tile. Batched event timing includes
+host launch-feed effects and small-grid underutilization; it is neither isolated
+kernel latency nor an application-level throughput claim. SM70 builds are
+compile-only, and an SM75 run without a visible matching device reports SKIP.
+
 The default build uses WMMA; `KITTENS_MMA_PTX` opts into the architecture PTX
 backend. SM75 runtime correctness is tested on TITAN RTX; SM70 and CUDA 11.0
 have compile/codegen evidence only. Exit 77 means the SM75 runtime check was

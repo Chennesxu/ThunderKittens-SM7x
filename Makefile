@@ -544,6 +544,39 @@ test-attention-ptx-sm75: build-attention-ptx-sm75
 	if [[ $$status -eq 77 ]]; then echo "SKIP: PTX fixed Attention SM75 runtime validation pending (binary exit 77)"; exit 0; fi; \
 	exit $$status
 
+.PHONY: build-bench-attention-sm70 build-bench-attention-sm75 build-bench-attention-ptx-sm70 build-bench-attention-ptx-sm75 bench-attention-sm75 bench-attention-ptx-sm75
+ATTENTION_BENCH_SRC := src/attention.cu bench/attention_throughput.cu
+
+$(BUILD_DIR)/attention-throughput-sm70: $(ATTENTION_BENCH_SRC) $(ATTENTION_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM70_FLAGS) $(ATTENTION_BENCH_SRC) -o $@
+
+build-bench-attention-sm70: $(BUILD_DIR)/attention-throughput-sm70
+
+$(BUILD_DIR)/attention-throughput-sm75: $(ATTENTION_BENCH_SRC) $(ATTENTION_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) $(ATTENTION_BENCH_SRC) -o $@
+
+build-bench-attention-sm75: $(BUILD_DIR)/attention-throughput-sm75
+
+$(BUILD_DIR)/attention-throughput-ptx-sm70: $(ATTENTION_BENCH_SRC) $(ATTENTION_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM70_FLAGS) $(PTX_MMA_FLAGS) $(ATTENTION_BENCH_SRC) -o $@
+
+build-bench-attention-ptx-sm70: $(BUILD_DIR)/attention-throughput-ptx-sm70
+
+$(BUILD_DIR)/attention-throughput-ptx-sm75: $(ATTENTION_BENCH_SRC) $(ATTENTION_HEADERS) | $(BUILD_DIR)
+	$(NVCC) $(COMMON_FLAGS) -I$(ROOT_DIR)/tests $(SM75_FLAGS) $(PTX_MMA_FLAGS) $(ATTENTION_BENCH_SRC) -o $@
+
+build-bench-attention-ptx-sm75: $(BUILD_DIR)/attention-throughput-ptx-sm75
+
+bench-attention-sm75: build-bench-attention-sm75
+	@status=0; "$(BUILD_DIR)/attention-throughput-sm75" || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: attention benchmark SM75 runtime validation pending (binary exit 77)"; exit 0; fi; \
+	exit $$status
+
+bench-attention-ptx-sm75: build-bench-attention-ptx-sm75
+	@status=0; "$(BUILD_DIR)/attention-throughput-ptx-sm75" || status=$$?; \
+	if [[ $$status -eq 77 ]]; then echo "SKIP: PTX attention benchmark SM75 runtime validation pending (binary exit 77)"; exit 0; fi; \
+	exit $$status
+
 .PHONY: build-tile-causal-softmax-sm70 build-tile-causal-softmax-sm75 build-tile-causal-softmax-ptx-sm70 build-tile-causal-softmax-ptx-sm75 test-tile-causal-softmax-sm75 test-tile-causal-softmax-ptx-sm75
 all: build-tile-causal-softmax-sm70 build-tile-causal-softmax-sm75 build-tile-causal-softmax-ptx-sm70 build-tile-causal-softmax-ptx-sm75
 
