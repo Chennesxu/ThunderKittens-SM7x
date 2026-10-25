@@ -1,293 +1,94 @@
 # ThunderKittens-SM7x
 
-**ThunderKittens-SM7x** is an independent project based on [ThunderKittens](https://github.com/HazyResearch/ThunderKittens), focused on NVIDIA Volta (SM70) and Turing (SM75) GPUs.
+ThunderKittens-SM7x is a small, independent CUDA C++ tile library inspired by
+[ThunderKittens](https://github.com/HazyResearch/ThunderKittens). It targets
+NVIDIA Volta (SM70) and Turing (SM75), not the newer GPUs targeted by upstream.
+It is **not** a drop-in port of upstream ThunderKittens or a general-purpose
+FlashAttention implementation.
 
-Upstream ThunderKittens now targets SM80 and newer architectures, with most active development focused on Hopper and Blackwell. Its current codebase does not support pre-SM80 GPUs. Community interest in SM70 and SM75 support is tracked in [ThunderKittens issue #21](https://github.com/HazyResearch/ThunderKittens/issues/21).
+## Why this project?
 
-This repository aims to maintain a small, architecture-specific implementation for SM70 and SM75 instead of backporting features that require newer hardware.
+[Upstream ThunderKittens](https://github.com/HazyResearch/ThunderKittens#hardware-requirements)
+is built and tested mainly for newer GPUs, uses C++20 and CUDA 12.8+, and lists
+test targets starting at SM80. An [upstream maintainer explained](https://github.com/HazyResearch/ThunderKittens/issues/21)
+that pre-SM80 GPUs do not run its code as-is: SM75 needs changes around
+asynchronous loads, FP16 support and MMA instructions, while SM70 needs further
+layout and data-movement work. That is a support and maintenance choice, not a
+claim that Volta or Turing cannot use Tensor Cores.
 
-## Goals
+This project provides a deliberately narrower path for existing SM7x systems:
+C++17/CUDA 11-compatible builds, synchronous staging, explicit WMMA and
+architecture-specific PTX backends, and focused correctness and instruction
+checks. Its value is legacy-hardware access and auditable tile code, not feature
+parity with upstream.
 
-1. Bring the ThunderKittens tile programming model to Volta and Turing.
-2. Provide architecture-specific backends built around each target's native Tensor Core instructions and memory hierarchy.
-3. Implement pipelines and synchronization paths that do not depend on `cp.async`, TMA, or other SM80+ features.
-4. Keep a common high-level API across SM70 and SM75 while making hardware capability differences explicit.
-5. Provide tested building blocks and examples for custom kernels, beginning with GEMM and a fixed Attention tile.
-6. Maintain a stable CUDA 11+ codebase for legacy GPU users as upstream development continues toward newer architectures.
-7. Improve hardware coverage through community testing, especially for V100 and TITAN V systems not available to the maintainer.
+## Support and limits
 
-## Scope
+| Target | Status |
+| --- | --- |
+| SM75 (Turing) | Runtime-tested on TITAN RTX with CUDA 12.4. |
+| SM70 (Volta) | Native compile/codegen-tested only; experimental until real Volta runtime validation. |
+| CUDA 11.0 | Compile/codegen-tested in a pinned toolkit container; runtime not tested there. |
 
-- NVIDIA SM70 and SM75 only
-- CUDA 11.0+
-- C++17
-- SM75 is the primary tested target; SM70 will remain experimental until it is validated on real Volta hardware
+Matrix multiplication uses FP16 operands with FP32 accumulation; row operations
+consume FP32 accumulators. The MMA tile is fixed at 16×16×16. This repository
+does not support SM80+ facilities, other matrix input dtypes, arbitrary
+Attention shapes or masks, batching, tails, or backward propagation.
 
-## Status
+## What works
 
-The first WMMA reference baseline builds native SM70 and SM75 targets and provides row-major FP16 × FP16 → FP32 GEMM for positive 16-aligned dimensions and non-compact leading dimensions.
+| Operation | Entry point | Scope |
+| --- | --- | --- |
+| GEMM | [`gemm.cuh`](include/tk_sm7x/gemm.cuh) | Row-major FP16×FP16→FP32; positive 16-aligned M/N/K and valid leading dimensions. |
+| Tile row sum/max | [`reduce.cuh`](include/tk_sm7x/reduce.cuh) | Reduce each row of a fixed 16×16 FP32 accumulator. |
+| Tile row softmax | [`softmax.cuh`](include/tk_sm7x/softmax.cuh) | Full-row and fixed causal-prefix variants. |
+| Attention forward | [`attention.cuh`](include/tk_sm7x/attention.cuh) | One 16-token × 16-feature tile, unmasked or causal; FP32 output. |
 
-The API enqueues asynchronously on the supplied CUDA stream. A, B, and C must be device-accessible, alive through stream completion, and non-overlapping; before completion, A/B cannot be modified and C cannot be read or written except by accesses ordered with the GEMM on that stream.
+GEMM and Attention enqueue asynchronously on the supplied CUDA stream. Their
+headers define pointer, aliasing, lifetime and error-return contracts; tile
+operations also require the documented warp convergence and private shared
+storage. Attention computes `softmax(QKᵀ / 4) V`, rounding probabilities to
+FP16 nearest-even before the second MMA. It is a fixed-tile correctness slice,
+not a variable-length sequence kernel.
 
-WMMA remains the default backend. Defining `KITTENS_MMA_PTX` opts a build into
-the native inline-PTX backend for its selected SM70 or SM75 target. Apply that
-definition consistently to every translation unit using the tile or backend
-headers: WMMA and PTX fragments have different representations and must not
-cross a translation-unit boundary compiled with different backend selections.
+WMMA is the default backend. Define `KITTENS_MMA_PTX` consistently across all
+translation units using tile/backend headers to select native PTX; their
+fragment representations must not cross mixed-backend translation units.
+See the [row-statistics](examples/gemm_row_stats.cu) and
+[GEMM-to-softmax](examples/gemm_row_softmax.cu) examples for tile composition.
 
-The repository provides separate builds for the opt-in path:
+## Build and verify
 
-```text
-make build-ptx-sm70 build-ptx-sm75
-make test-ptx-sm75
-make sanitize-ptx-sm75
-make build-bench-ptx-sm75
-make bench-ptx-sm75
-```
+Use `nvcc` with C++17; CUDA 11.0 is the minimum tested toolkit. From the
+repository root:
 
-The SM70 PTX target is compile- and codegen-checked only; opting in does not
-change its experimental status or expand the supported architecture set.
-
-### Tile row statistics
-
-The public `row_sum` and `row_max` operations reduce the 16 columns of an
-`rt_c` accumulator, writing 16 contiguous FP32 values indexed by logical row.
-The same signatures work in the default WMMA and opt-in PTX builds. A one-warp
-16×16×16 GEMM using them is in [examples/gemm_row_stats.cu](examples/gemm_row_stats.cu):
-
-```cpp
-tk_sm7x::rt_a a_tile;
-tk_sm7x::rt_b b_tile;
-tk_sm7x::rt_c c_tile;
-tk_sm7x::load(a_tile, shared_a, 0);
-tk_sm7x::load(b_tile, shared_b, 0);
-tk_sm7x::zero(c_tile);
-tk_sm7x::mma(c_tile, a_tile, b_tile);
-tk_sm7x::store(shared_c, c_tile);
-__syncwarp();
-tk_sm7x::store_block<32>(tk_sm7x::gl<float>{c, 16, 16, 16}, shared_c, 0, 0);
-tk_sm7x::row_sum(sums, c_tile, scratch);
-tk_sm7x::row_max(maxima, c_tile, scratch);
-```
-
-Here `shared_a` is a row-major FP16 tile, `shared_b` is a column-major FP16
-tile, and `shared_c` and `scratch` are separate row-major FP32 tiles. The caller
-allocates `scratch` explicitly in shared memory: one 16×16 tile is 1024 bytes
-per warp. WMMA uses it to store and reduce the accumulator; the PTX reduction
-does not use it, but takes the same argument. `sums` and `maxima` each point to
-16 writable FP32 values in shared or global memory. They must not overlap
-`scratch`, and concurrent warps need private scratch and disjoint destinations.
-The 32 lanes of each warp must call together in a one-dimensional CTA with a
-block size divisible by 32. Each call completes its writes and permits the
-calling warp to consume the result or reuse scratch on return. Cross-warp and
-cross-CTA consumers need their own synchronization. Inputs and sum
-intermediates must be finite; the reduction uses a balanced column-order tree,
-with maximum ties choosing the right operand.
-
-```text
-make build-example-row-stats-sm70 build-example-row-stats-sm75
-make build-example-row-stats-ptx-sm70 build-example-row-stats-ptx-sm75
-make example-row-stats-sm75 example-row-stats-ptx-sm75
-```
-
-The example writes all 256 FP32 C values and both 16-value statistics arrays,
-then checks them against an exact q/8 input reference. SM70 example builds are
-compile-only; runtime validation remains limited to SM75 hardware. An exit 77
-from an SM75 binary is reported by Make as SKIP.
-
-### Tile row softmax
-
-Include `tk_sm7x/softmax.cuh` to normalize each of the 16 rows of an `rt_c`:
-
-```cpp
-__shared__ tk_sm7x::st<float, 16, 16, tk_sm7x::row_major> probabilities;
-__shared__ tk_sm7x::st<float, 16, 16, tk_sm7x::row_major> scratch;
-tk_sm7x::row_softmax(probabilities, c_tile, scratch);
-```
-
-The accumulator must contain finite logits and is preserved. The output and
-scratch must be distinct, aligned shared tiles private to the calling warp.
-All 32 lanes call convergently in a one-dimensional CTA whose block size is
-divisible by 32. The output is row-major FP32, computed with maximum subtraction,
-CUDA `expf`, normal FP32 division and balanced column-order reductions. On return,
-the warp can read the output and reuse scratch; consumers in other warps or CTAs
-require caller synchronization. WMMA stores the opaque accumulator to scratch
-and splits each row across two lanes; the opt-in PTX path uses its backend
-register layout and warp shuffles.
-
-The [public correctness test](tests/tile_softmax.cu) uses FP16 scores times an
-identity matrix, verifies the exact accumulator logits, then compares with an
-independent binary64 softmax. Its predeclared absolute bound is `512 * 2^-23`
-for each probability and the row sum, only for these identity-MMA fixtures:
-position-distinguishable q/8 logits, zero rows, offsets near ±1000 and normal
-FP16 values with full mantissas. The test also checks all outputs against a
-separate scalar shared-memory evaluation of the canonical reduction tree.
-This is neither a universal accuracy guarantee nor the GEMM model budget.
-
-```text
-make build-tile-softmax-sm70 build-tile-softmax-ptx-sm70
-make test-tile-softmax-sm75 test-tile-softmax-ptx-sm75
-make sanitize-tile-softmax-sm75 sanitize-tile-softmax-ptx-sm75
-```
-
-SM70 and CUDA 11.0 receive compile/codegen validation only; SM70 remains
-experimental. SM75 runtime exit 77 is SKIP.
-
-`row_softmax_causal(probabilities, c_tile, scratch)` has the same tile and
-warp contract, but row `i` normalizes only columns `0..i` and writes zero
-above the diagonal. Both backends use the shared-memory path for this
-position-dependent operation. The focused test checks an independent prefix
-softmax, strict masked zeros and unchanged accumulator values:
-
-```text
-make build-tile-causal-softmax-sm70 build-tile-causal-softmax-ptx-sm70
-make test-tile-causal-softmax-sm75 test-tile-causal-softmax-ptx-sm75
-bash tests/run_sanitizers.sh tile-causal-softmax
-bash tests/run_sanitizers.sh tile-causal-softmax-ptx
-```
-
-A self-checking [GEMM-to-row-softmax example](examples/gemm_row_softmax.cu)
-combines the public MMA and softmax tile operations in one warp, writes both
-the 16×16 FP32 logits and probabilities, and checks them against an independent
-host reference. It is a composition example, not an Attention kernel or a
-performance benchmark:
-
-```text
-make build-example-row-softmax-sm70 build-example-row-softmax-sm75
-make build-example-row-softmax-ptx-sm70 build-example-row-softmax-ptx-sm75
-make example-row-softmax-sm75 example-row-softmax-ptx-sm75
-```
-
-The SM70 builds are compile/codegen-only; a runtime check requires a selected
-SM75 device, and exit 77 is reported as SKIP.
-
-### Fixed 16×16 Attention forward
-
-`tk_sm7x/attention.cuh` provides two asynchronous, fixed-size operations:
-
-```cpp
-cudaError_t status = tk_sm7x::attention_forward_16x16(q, k, v, out, stream);
-cudaError_t causal_status =
-    tk_sm7x::attention_forward_16x16_causal(q, k, v, out_causal, stream);
-```
-
-Q, K and V are contiguous row-major 16×16 FP16 matrices indexed by token and
-feature; `out` is a separate contiguous row-major 16×16 FP32 matrix. The three
-read-only inputs may share storage. All storage must be device-accessible and
-alive through stream completion; before then, input modification and output
-access require ordering with this call on the supplied stream. Null pointers
-return `cudaErrorInvalidValue`; a successful return covers validation and
-launch, while execution errors surface at later synchronization.
-
-One warp computes `softmax(QKᵀ / 4) V`: it stages K as a logical transpose,
-uses FP32 accumulation and stable row softmax, rounds the FP32 probabilities
-to FP16 nearest-even, then performs a second FP16-input/FP32-accumulation MMA.
-The causal entry uses the same data flow but sets probabilities for key tokens
-`j>i` to zero in query row `i`, normalizing over `0..i` only. Its first row
-therefore selects `V[0,*]`; its last row has no masked tokens. Both entries
-use RN-even FP16 probability conversion as part of their numerical behavior.
-The focused tests check independent staged references and declared bounds for
-their fixtures; they do not establish universal accuracy versus ideal binary64
-Attention. Arbitrary masks, tails, batching, arbitrary shapes, dropout and
-backward are not supported.
-
-```text
-make build-attention-sm70 build-attention-sm75
-make build-attention-ptx-sm70 build-attention-ptx-sm75
+```bash
+make all
+make test-sm75 test-ptx-sm75
 make test-attention-sm75 test-attention-ptx-sm75
-bash tests/run_sanitizers.sh attention
-bash tests/run_sanitizers.sh attention-ptx
 ```
 
-Each Attention test binary exercises both the unmasked and causal entries.
+`make all` builds native SM70 and SM75 targets and runs host, architecture and
+codegen gates. SM75 runtime targets select an actual compute-capability 7.5
+device; without one, Make prints **SKIP**, not PASS. SM70 builds do not establish
+Volta runtime correctness.
 
-An optional fixed-tile benchmark calls both public entries on the same
-non-symmetric Q/K and asymmetric V fixture. It checks every output against an
-independent staged host reference before timing, then reports four-round median
-and range in amortized CUDA-event microseconds per call, plus reciprocal tile
-throughput:
+Optional throughput measurements:
 
-```text
-make build-bench-attention-sm70 build-bench-attention-ptx-sm70
+```bash
+make bench-sm75 bench-ptx-sm75
 make bench-attention-sm75 bench-attention-ptx-sm75
 ```
 
-Each call launches one warp for one 16×16 tile. Batched event timing includes
-host launch-feed effects and small-grid underutilization; it is neither isolated
-kernel latency nor an application-level throughput claim. SM70 builds are
-compile-only, and an SM75 run without a visible matching device reports SKIP.
+The Attention benchmark times repeated one-tile public calls after checking
+every output. Its event time includes launch-feed effects and does not measure
+isolated kernel latency or application throughput.
 
-The default build uses WMMA; `KITTENS_MMA_PTX` opts into the architecture PTX
-backend. SM75 runtime correctness is tested on TITAN RTX; SM70 and CUDA 11.0
-have compile/codegen evidence only. Exit 77 means the SM75 runtime check was
-skipped, not passed. No end-to-end performance claim is made.
-
-The optional `make bench-row-softmax-sm75` benchmark compares a scalar WMMA
-shared reference, a separate two-lanes-per-row WMMA implementation matching
-the public path, and PTX m8/m16 register and matched shared-reference paths.
-It checks the two-lane implementation's
-256 outputs against the scalar path and an independent host reference, then
-checks a nontrivial output fingerprint before timing and reports elapsed
-event time divided by completed warps for an identical K=16 staging/MMA prefix,
-four alternating rounds and one warp per block. The numbers include that
-prefix, output publication, resource effects and scheduling; they are not
-isolated softmax latency or end-to-end application performance. It retains
-ordinary `expf` and division. Benchmark measurements alone do not establish
-the public API's application-level speedup.
-
-The differential GEMM driver runs six exact-domain cases and ten model-domain
-cases: full-mantissa normal-FP16 inputs, including mixed normal exponents, plus
-the declared zero cases. It compares the WMMA, PTX m8, and (on SM75) PTX m16
-backends. On SM75 it also compares the selected production GEMM path on the
-same allocations:
-
-```text
-make build-differential-sm70 build-differential-sm75
-make build-differential-ptx-sm70 build-differential-ptx-sm75
-make test-differential-sm75 test-differential-ptx-sm75
-make sanitize-differential-sm75 sanitize-differential-ptx-sm75
-```
-
-The exact cases use finite FP16 values q/8 for integer |q| <= 8 and positive,
-16-aligned K <= 1024.
-Products are exact multiples of 1/64 and the bounded partial sums remain exactly
-representable in FP32, which justifies zero-tolerance comparisons for those
-fixtures, including direct backend pairs and row-padding sentinels. The general
-fixtures retain an exact binary64 reference and use a per-output conditional
-model-derived budget; their declared input domain, assumptions, derivation, and
-limits are in [the numerical validation model](docs/numerical-validation.md).
-This is not a universal NVIDIA accuracy guarantee: the HMMA.1688 extension is
-an assumption, arbitrary FP16 inputs are outside the declared domain, and it
-does not establish SM70 runtime correctness.
-
-The inline-PTX backends also expose a register-resident row reduction. Because
-`nvcuda::wmma::fragment` leaves its lane-to-matrix mapping unspecified, the WMMA
-backend can only reduce a row by round-tripping the accumulator through shared
-memory; the PTX backends reduce through warp shuffles instead. Both paths combine
-the 16 column values as a balanced binary tree in column index order, so they
-agree exactly rather than within an error budget:
-
-```text
-make build-row-reduce-sm70 build-row-reduce-sm75
-make test-row-reduce-sm75
-make sanitize-row-reduce-sm75
-make bench-row-reduce-sm75
-```
-
-The test compares each backend's register-resident result against the
-shared-memory reference and against a host evaluation of the declared order, all
-with zero tolerance, and additionally against an order-independent exact
-reference on the domain where every partial sum is exactly representable in FP32.
-It censuses how many additions of the declared tree actually round, so a fixture
-whose reduction happens to be exact cannot pass as rounding coverage.
-The benchmark reports what it measured for both paths; it is a bounded
-microbenchmark of the reduction, not a claim about end-to-end performance.
-
-- SM75 correctness and Compute Sanitizer checks pass on the identified Turing device.
-- Compile and codegen checks pass with CUDA 11.0.3 and the local CUDA 12.4 toolkit.
-- SM70 is compile-tested and remains experimental until it is run on Volta hardware.
-- No performance claims are made for this correctness baseline.
+The [numerical validation notes](docs/numerical-validation.md) describe the
+tested GEMM input domain and conditional error model. Fixture bounds and
+backend comparisons are not universal NVIDIA accuracy guarantees.
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE).
+MIT; see [LICENSE](LICENSE). No upstream C++/CUDA implementation was copied
+into the initial SM7x core.
